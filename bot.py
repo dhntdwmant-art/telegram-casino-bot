@@ -1,4 +1,3 @@
-```python
 import logging
 import sqlite3
 import random
@@ -374,7 +373,7 @@ def play_rps(user_choice: str) -> Tuple[str, float, bool, str]:
     odds = 1.8 if win else 1.0 if result == "draw" else 0.0
     return bot_choice, odds, win, result
 
-# --- Keyboard Builders (با دکمه‌های زیبا) ---
+# --- Keyboard Builders ---
 def main_menu_keyboard():
     keyboard = [
         [InlineKeyboardButton("🎮 بازی‌ها", callback_data="games")],
@@ -403,13 +402,13 @@ def game_outcome_keyboard(game: str, outcomes: list):
     buttons = []
     for item in outcomes:
         if game == "dice":
-            label = f"عدد {item}"
+            label = f"🎯 عدد {item}"
             callback = f"outcome_{game}_{item}"
         elif game in ["bowling", "lottery"]:
-            label = f"{item['name']} ({item['odds']}x)"
+            label = f"🎯 {item['name']} ({item['odds']}x)"
             callback = f"outcome_{game}_{item['name']}"
         elif game == "rps":
-            label = item
+            label = f"✊ {item}"
             callback = f"outcome_{game}_{item}"
         buttons.append([InlineKeyboardButton(label, callback_data=callback)])
     buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="games")])
@@ -420,7 +419,7 @@ def bet_amount_keyboard():
     keyboard = []
     row = []
     for i, amt in enumerate(amounts):
-        label = f"{amt:,} تومان"
+        label = f"💰 {amt:,} تومان"
         row.append(InlineKeyboardButton(label, callback_data=f"bet_{amt}"))
         if (i+1) % 3 == 0:
             keyboard.append(row)
@@ -477,8 +476,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 pass
         create_user(user_id, username, first_name, ref_id)
-        if ref_id:
-            pass  # reward after first game
     await update.message.reply_text(
         "🌟 به ربات بازی‌ها خوش آمدید!\n"
         "یکی از گزینه‌های زیر را انتخاب کنید:",
@@ -507,6 +504,7 @@ async def game_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     game = query.data.split("_")[1]
     context.user_data["game"] = game
+    
     if game == "dice":
         outcomes = [1,2,3,4,5,6]
         text = "🎯 مرحله اول: پیش‌بینی نتیجه\n\nبازی: تاس 🎲\nلطفاً عددی که فکر می‌کنید می‌افتد را انتخاب کنید:\n⚠️ شما فقط در صورتی برنده می‌شوید که دقیقاً همین عدد رخ دهد!"
@@ -526,6 +524,7 @@ async def game_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await query.edit_message_text("بازی نامعتبر!", reply_markup=main_menu_keyboard())
         return
+    
     await query.edit_message_text(text, reply_markup=keyboard)
     return GAME_CHOOSE
 
@@ -534,8 +533,9 @@ async def game_outcome_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
     data = query.data.split("_")
     game = data[1]
-    choice = "_".join(data[2:])  # برای مواردی که اسم چند کلمه‌ای دارد
+    choice = "_".join(data[2:])
     context.user_data["game_outcome"] = choice
+    
     odds = None
     if game == "dice":
         odds = DICE_ODDS
@@ -552,6 +552,7 @@ async def game_outcome_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         await query.edit_message_text("خطا!", reply_markup=main_menu_keyboard())
         return ConversationHandler.END
+    
     context.user_data["game_odds"] = odds
     text = (
         f"🎯 مرحله دوم: تعیین مبلغ شرط\n\n"
@@ -577,6 +578,7 @@ async def game_bet_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
+    
     if data == "bet_custom":
         await query.edit_message_text("لطفاً مبلغ مورد نظر خود را به عدد وارد کنید (حداقل ۱۰ تومان):")
         return GAME_BET
@@ -612,6 +614,7 @@ async def show_confirm_message(update_or_msg, context: ContextTypes.DEFAULT_TYPE
     bet = context.user_data["bet_amount"]
     user_id = update_or_msg.effective_user.id
     user = get_user(user_id)
+    
     if user["balance"] < bet:
         msg = "⚠️ موجودی شما کافی نیست! لطفاً حساب خود را شارژ کنید."
         if isinstance(update_or_msg, Update):
@@ -619,6 +622,7 @@ async def show_confirm_message(update_or_msg, context: ContextTypes.DEFAULT_TYPE
         else:
             await update_or_msg.edit_message_text(msg, reply_markup=main_menu_keyboard())
         return ConversationHandler.END
+    
     text = (
         f"📋 تایید نهایی پیش‌بینی\n\n"
         f"لطفاً اطلاعات شرط خود را پیش از شروع بازی به دقت بررسی کنید.\n\n"
@@ -638,8 +642,9 @@ async def game_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
+    
     if data == "confirm_no":
-        await query.edit_message_text("شرط لغو شد.", reply_markup=main_menu_keyboard())
+        await query.edit_message_text("❌ شرط لغو شد.", reply_markup=main_menu_keyboard())
         return ConversationHandler.END
     elif data == "confirm_yes":
         game = context.user_data["game"]
@@ -647,10 +652,13 @@ async def game_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bet = context.user_data["bet_amount"]
         user_id = update.effective_user.id
         user = get_user(user_id)
+        
         if user["balance"] < bet:
-            await query.edit_message_text("موجودی شما کافی نیست! لطفاً شارژ کنید.", reply_markup=main_menu_keyboard())
+            await query.edit_message_text("⚠️ موجودی شما کافی نیست! لطفاً شارژ کنید.", reply_markup=main_menu_keyboard())
             return ConversationHandler.END
+        
         update_user_balance(user_id, -bet)
+        
         if game == "dice":
             result_num, odds, win = play_dice(int(outcome))
             result_str = f"عدد {result_num}"
@@ -662,7 +670,7 @@ async def game_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             bot_choice, odds, win, result = play_rps(outcome)
             result_str = bot_choice
         else:
-            await query.edit_message_text("خطا در اجرای بازی!", reply_markup=main_menu_keyboard())
+            await query.edit_message_text("❌ خطا در اجرای بازی!", reply_markup=main_menu_keyboard())
             return ConversationHandler.END
 
         if win:
@@ -700,7 +708,7 @@ async def game_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(result_msg, reply_markup=main_menu_keyboard())
         return ConversationHandler.END
     else:
-        await query.edit_message_text("خطا!", reply_markup=main_menu_keyboard())
+        await query.edit_message_text("❌ خطا!", reply_markup=main_menu_keyboard())
         return ConversationHandler.END
 
 # --- Profile ---
@@ -712,9 +720,11 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user:
         await query.edit_message_text("کاربر یافت نشد! لطفاً /start را بزنید.", reply_markup=main_menu_keyboard())
         return
+    
     level = get_user_level(user["balance"])
     last_games = get_last_games(user_id, 5)
     games_text = "\n".join([f"{g['game_type']} - {g['bet_amount']:,} تومان - {g['result']} ({g['profit']:,})" for g in last_games]) if last_games else "هیچ بازی ثبت نشده."
+    
     text = (
         f"👤 بخش حساب کاربری\n\n"
         f"اطلاعات دقیق حساب شما در سیستم:\n\n"
@@ -731,11 +741,12 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def deposit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    
     amounts = [10, 50, 100, 150, 300, 500, 750, 1000, 2500, 5000, 10000, 20000, 50000, 100000, 200000, 500000, 1000000, 5000000]
     keyboard = []
     row = []
     for i, amt in enumerate(amounts):
-        label = f"{amt:,} تومان"
+        label = f"💰 {amt:,} تومان"
         row.append(InlineKeyboardButton(label, callback_data=f"deposit_{amt}"))
         if (i+1) % 3 == 0:
             keyboard.append(row)
@@ -744,6 +755,7 @@ async def deposit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append(row)
     keyboard.append([InlineKeyboardButton("💰 مبلغ دلخواه", callback_data="deposit_custom")])
     keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data="menu")])
+    
     await query.edit_message_text(
         "💰 افزایش موجودی\n\n"
         "لطفاً مبلغ مورد نظر برای شارژ حساب خود را انتخاب کنید:",
@@ -755,6 +767,7 @@ async def deposit_amount_chosen(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer()
     data = query.data
+    
     if data == "deposit_custom":
         await query.edit_message_text("لطفاً مبلغ مورد نظر خود را به عدد وارد کنید (حداقل ۱۰ تومان):")
         return DEPOSIT_AMOUNT
@@ -784,6 +797,7 @@ async def send_card_info_message(update_or_msg, context: ContextTypes.DEFAULT_TY
     amount = context.user_data["deposit_amount"]
     card_num = CARD_NUMBER
     card_owner = CARD_OWNER
+    
     text = (
         f"💳 برای شارژ حساب خود مبلغ {amount:,} تومان را به شماره کارت زیر واریز کنید:\n\n"
         f"🏦 شماره کارت: `{card_num}`\n"
@@ -801,16 +815,20 @@ async def deposit_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     photo = update.message.photo[-1]
     file_id = photo.file_id
     amount = context.user_data.get("deposit_amount")
+    
     if not amount:
-        await update.message.reply_text("خطا! لطفاً دوباره از منو اقدام کنید.", reply_markup=main_menu_keyboard())
+        await update.message.reply_text("❌ خطا! لطفاً دوباره از منو اقدام کنید.", reply_markup=main_menu_keyboard())
         return ConversationHandler.END
+    
     user_id = update.effective_user.id
     deposit_id = create_deposit(user_id, amount, file_id)
+    
     await update.message.reply_text(
         f"✅ رسید شما دریافت شد. درخواست واریز شما با شماره #{deposit_id} ثبت گردید.\n"
         f"پس از تایید توسط ادمین، موجودی شما افزایش خواهد یافت.",
         reply_markup=main_menu_keyboard()
     )
+    
     if OWNER_ID:
         user = get_user(user_id)
         caption = (
@@ -832,6 +850,7 @@ async def deposit_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def withdraw_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    
     await query.edit_message_text(
         f"💳 برداشت موجودی\n\n"
         f"لطفاً مبلغ مورد نظر برای برداشت را وارد کنید (حداقل {MIN_WITHDRAWAL:,} تومان):",
@@ -845,11 +864,13 @@ async def withdraw_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if amount < MIN_WITHDRAWAL:
             await update.message.reply_text(f"حداقل مبلغ برداشت {MIN_WITHDRAWAL:,} تومان است. لطفاً عدد بزرگتر وارد کنید.")
             return WITHDRAW_AMOUNT
+        
         user_id = update.effective_user.id
         user = get_user(user_id)
         if user["balance"] < amount:
             await update.message.reply_text("موجودی شما کافی نیست!")
             return WITHDRAW_AMOUNT
+        
         withdrawal_id = create_withdrawal(user_id, amount)
         await update.message.reply_text(
             f"✅ درخواست برداشت شما به مبلغ {amount:,} تومان ثبت شد.\n"
@@ -857,6 +878,7 @@ async def withdraw_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"پس از تایید ادمین، مبلغ از حساب شما کسر و واریز خواهد شد.",
             reply_markup=main_menu_keyboard()
         )
+        
         if OWNER_ID:
             user = get_user(user_id)
             caption = (
@@ -884,19 +906,24 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user = get_user(user_id)
     top_users = get_top_users(5)
+    
     if not top_users:
         await query.edit_message_text("هنوز کاربری در لیدربورد وجود ندارد.", reply_markup=main_menu_keyboard())
         return
+    
     text = "📊 لیدربورد (برترین‌های ربات)\n\nبا بازی بیشتر، جایگاه خود را در لیدربورد ارتقا دهید!\n\n"
+    
     if user:
         level = get_user_level(user["balance"])
         text += f"👤 کاربر: @{user['username'] or 'بدون نام'}\n"
         text += f"🏅 سطح شما: {level}\n"
         text += f"💎 موجودی شما: {user['balance']:,} تومان\n\n"
+    
     text += "لیست برترین‌ها:\n"
     for i, u in enumerate(top_users, 1):
         name = u['username'] or u['first_name'] or f"کاربر {u['id']}"
         text += f"{i}️⃣ | {name} - {u['balance']:,} تومان\n"
+    
     await query.edit_message_text(text, reply_markup=main_menu_keyboard())
 
 # --- Referral ---
@@ -905,9 +932,11 @@ async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     user_id = update.effective_user.id
     user = get_user(user_id)
+    
     if not user:
         await query.edit_message_text("کاربر یافت نشد.", reply_markup=main_menu_keyboard())
         return
+    
     link = get_referral_link(user_id)
     text = (
         f"👥 بخش زیرمجموعه‌گیری\n\n"
@@ -955,6 +984,7 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         await query.edit_message_text("دسترسی غیرمجاز!", reply_markup=main_menu_keyboard())
         return
+    
     conn = get_db()
     c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM users")
@@ -968,6 +998,7 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     c.execute("SELECT SUM(profit) FROM games_history WHERE result='loss'")
     total_losses = c.fetchone()[0] or 0
     conn.close()
+    
     text = (
         f"📊 آمار کلی ربات\n\n"
         f"👥 تعداد کاربران: {total_users}\n"
@@ -984,10 +1015,12 @@ async def admin_deposits(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     if update.effective_user.id != OWNER_ID:
         return
+    
     pending = get_pending_deposits()
     if not pending:
         await query.edit_message_text("هیچ درخواست واریز در انتظار تایید وجود ندارد.", reply_markup=admin_panel_keyboard())
         return
+    
     for dep in pending:
         user = get_user(dep["user_id"])
         caption = (
@@ -1009,10 +1042,12 @@ async def admin_withdrawals(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     if update.effective_user.id != OWNER_ID:
         return
+    
     pending = get_pending_withdrawals()
     if not pending:
         await query.edit_message_text("هیچ درخواست برداشت در انتظار تایید وجود ندارد.", reply_markup=admin_panel_keyboard())
         return
+    
     for wd in pending:
         user = get_user(wd["user_id"])
         text = (
@@ -1034,6 +1069,7 @@ async def admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     if update.effective_user.id != OWNER_ID:
         return
+    
     conn = get_db()
     c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM users")
@@ -1047,10 +1083,12 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         await query.edit_message_text("دسترسی غیرمجاز!", reply_markup=main_menu_keyboard())
         return
+    
     data = query.data.split("_")
     action = data[1]
     action_type = data[2]
     item_id = int(data[3])
+    
     if action_type == "deposit":
         if action == "approve":
             approve_deposit(item_id)
