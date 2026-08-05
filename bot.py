@@ -1,5 +1,5 @@
 # ==============================================
-# 🎰 ربات کازینو - نسخه نهایی با پنل پیشرفته
+# 🎰 ربات کازینو - نسخه نهایی با کارمزد ۱۰٪
 # ==============================================
 
 import asyncio
@@ -7,7 +7,6 @@ import logging
 import sqlite3
 import random
 import json
-import os
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 
@@ -28,9 +27,8 @@ from aiogram.enums import ParseMode
 
 BOT_TOKEN = "8975472860:AAE-eW542h7VnDICPUQ9UhL7AjIY-YKSLUQ"
 ADMIN_USER_ID = 7548145568
-ADMIN_PASSWORD = "09158029769"
+ADMIN_PASSWORD = "123456"
 
-# تنظیمات پیش‌فرض (قابل تغییر از پنل)
 DEFAULT_SETTINGS = {
     "card_number": "6062561009737464",
     "card_holder": "مجاور",
@@ -46,6 +44,7 @@ DEFAULT_SETTINGS = {
     "daily_mission_reward": 50,
     "dice_win_chance": 16,
     "lottery_win_chance": 2,
+    "commission_percent": 10,  # 🏦 درصد کارمزد
     "min_bet": 10,
     "max_bet": 10000
 }
@@ -58,7 +57,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # ==============================================
-# 🗄️ دیتابیس پیشرفته
+# 🗄️ دیتابیس
 # ==============================================
 
 class Database:
@@ -101,6 +100,7 @@ class Database:
                     total_games INTEGER DEFAULT 0,
                     total_wins INTEGER DEFAULT 0,
                     total_losses INTEGER DEFAULT 0,
+                    total_commission_paid INTEGER DEFAULT 0,
                     first_withdraw_used INTEGER DEFAULT 0,
                     join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -128,6 +128,7 @@ class Database:
                     creator_choice TEXT,
                     player2_choice TEXT,
                     winner_id INTEGER,
+                    commission_taken INTEGER DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
                 
@@ -170,7 +171,6 @@ class Database:
                 VALUES (7548145568, 1, '7548145568');
             ''')
             
-            # درج تنظیمات پیش‌فرض
             for key, value in DEFAULT_SETTINGS.items():
                 c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", 
                          (key, json.dumps(value) if isinstance(value, (list, dict)) else str(value)))
@@ -204,6 +204,34 @@ class Database:
                     settings[r['key']] = r['value']
             return settings
     
+    # ========== کمیسیون ==========
+    
+    def get_commission_percent(self):
+        return int(self.get_setting('commission_percent', 10))
+    
+    def take_commission(self, winner_id, raw_prize, game_type='game'):
+        """کسر کارمزد از جایزه و واریز به ادمین"""
+        percent = self.get_commission_percent()
+        fee = int(raw_prize * percent / 100)
+        final_prize = raw_prize - fee
+        
+        if fee > 0:
+            # واریز کارمزد به ادمین اصلی
+            with self.conn() as c:
+                c.execute("UPDATE users SET balance=balance+? WHERE user_id=?", (fee, ADMIN_USER_ID))
+                c.execute("UPDATE users SET total_commission_paid=total_commission_paid+? WHERE user_id=?", (fee, winner_id))
+                c.execute("INSERT INTO transactions (user_id, type, amount, description) VALUES (?,?,?,?)",
+                         (ADMIN_USER_ID, 'commission', fee, f'کارمزد {percent}٪ از کاربر {winner_id} - {game_type}'))
+                c.execute("INSERT INTO transactions (user_id, type, amount, description) VALUES (?,?,?,?)",
+                         (winner_id, 'commission_paid', -fee, f'کارمزد {percent}٪ پرداخت شد'))
+        
+        return final_prize, fee
+    
+    def get_total_commission(self):
+        with self.conn() as c:
+            r = c.execute("SELECT COALESCE(SUM(amount),0) as t FROM transactions WHERE type='commission'").fetchone()
+            return r['t']
+    
     # ========== کاربران ==========
     
     def get_user(self, user_id):
@@ -221,6 +249,7 @@ class Database:
                 )
                 if invited_by and invited_by != user_id:
                     c.execute("UPDATE users SET diamonds=diamonds+1, total_invites=total_invites+1 WHERE user_id=?", (invited_by,))
+                logger.info(f"New user: {user_id}")
             else:
                 c.execute("UPDATE users SET username=?, first_name=?, last_name=? WHERE user_id=?", 
                          (username, first_name, last_name, user_id))
@@ -248,32 +277,6 @@ class Database:
                 c.execute("UPDATE users SET total_wins=total_wins+1 WHERE user_id=?", (user_id,))
             elif ttype == 'loss':
                 c.execute("UPDATE users SET total_losses=total_losses+1 WHERE user_id=?", (user_id,))
-    
-    def get_all_users(self, page=1, per_page=10, search=None):
-        with self.conn() as c:
-            if search:
-                query = "SELECT * FROM users WHERE user_id LIKE ? OR first_name LIKE ? OR username LIKE ? ORDER BY join_date DESC"
-                param = f"%{search}%"
-                rows = c.execute(query, (param, param, param)).fetchall()
-            else:
-                rows = c.execute("SELECT * FROM users ORDER BY join_date DESC LIMIT ? OFFSET ?", 
-                               (per_page, (page-1)*per_page)).fetchall()
-            total = c.execute("SELECT COUNT(*) as c FROM users").fetchone()['c']
-            return [dict(r) for r in rows], total
-    
-    def ban_user(self, user_id, reason=''):
-        with self.conn() as c:
-            c.execute("UPDATE users SET is_banned=1, ban_reason=? WHERE user_id=?", (reason, user_id))
-    
-    def unban_user(self, user_id):
-        with self.conn() as c:
-            c.execute("UPDATE users SET is_banned=0, ban_reason=NULL WHERE user_id=?", (user_id,))
-    
-    def set_admin(self, user_id, is_admin=True):
-        with self.conn() as c:
-            c.execute("UPDATE users SET is_admin=? WHERE user_id=?", (1 if is_admin else 0, user_id))
-    
-    # ========== بازی‌ها ==========
     
     def lock_user(self, user_id, game_name):
         with self.conn() as c:
@@ -316,9 +319,9 @@ class Database:
             r = c.execute("SELECT * FROM game_rooms WHERE room_id=?", (rid,)).fetchone()
             return dict(r) if r else None
     
-    def finish_room(self, rid, winner):
+    def finish_room(self, rid, winner, commission=0):
         with self.conn() as c:
-            c.execute("UPDATE game_rooms SET status='finished', winner_id=? WHERE room_id=?", (winner, rid))
+            c.execute("UPDATE game_rooms SET status='finished', winner_id=?, commission_taken=? WHERE room_id=?", (winner, commission, rid))
     
     def add_queue(self, uid, gtype, bet):
         with self.conn() as c:
@@ -343,33 +346,20 @@ class Database:
         with self.conn() as c:
             return c.execute("SELECT COUNT(*) as c FROM match_queue").fetchone()['c']
     
-    # ========== تراکنش‌ها ==========
-    
-    def get_transactions(self, user_id=None, limit=50):
+    def get_last_bet(self, uid):
         with self.conn() as c:
-            if user_id:
-                rows = c.execute("SELECT * FROM transactions WHERE user_id=? ORDER BY timestamp DESC LIMIT ?", 
-                               (user_id, limit)).fetchall()
-            else:
-                rows = c.execute("SELECT * FROM transactions ORDER BY timestamp DESC LIMIT ?", 
-                               (limit,)).fetchall()
-            return [dict(r) for r in rows]
+            r = c.execute(
+                "SELECT amount FROM transactions WHERE user_id=? AND type='bet' ORDER BY timestamp DESC LIMIT 1",
+                (uid,)
+            ).fetchone()
+            return abs(r['amount']) if r else 0
     
-    def get_transactions_count(self):
+    def get_invite_stats(self, uid):
         with self.conn() as c:
-            return c.execute("SELECT COUNT(*) as c FROM transactions").fetchone()['c']
-    
-    def get_total_deposits(self):
-        with self.conn() as c:
-            r = c.execute("SELECT COALESCE(SUM(amount),0) as t FROM transactions WHERE type='deposit'").fetchone()
-            return r['t']
-    
-    def get_total_withdraws(self):
-        with self.conn() as c:
-            r = c.execute("SELECT COALESCE(SUM(amount),0) as t FROM transactions WHERE type='withdraw'").fetchone()
-            return r['t']
-    
-    # ========== برداشت ==========
+            total = c.execute("SELECT COUNT(*) as c FROM users WHERE invited_by=?", (uid,)).fetchone()['c']
+            active = c.execute("SELECT COUNT(*) as c FROM users WHERE invited_by=? AND total_games>=1", (uid,)).fetchone()['c']
+            d = c.execute("SELECT diamonds FROM users WHERE user_id=?", (uid,)).fetchone()
+            return {'total': total, 'active': active, 'diamonds': d['diamonds'] if d else 0}
     
     def can_withdraw(self, uid):
         settings = self.get_all_settings()
@@ -420,22 +410,15 @@ class Database:
             ).fetchall()
             return [dict(r) for r in rows]
     
-    def get_all_withdrawals(self, limit=50):
+    def get_transactions(self, user_id=None, limit=50):
         with self.conn() as c:
-            rows = c.execute(
-                "SELECT wr.*, u.first_name, u.last_name FROM withdraw_requests wr JOIN users u ON wr.user_id=u.user_id ORDER BY wr.timestamp DESC LIMIT ?",
-                (limit,)
-            ).fetchall()
+            if user_id:
+                rows = c.execute("SELECT * FROM transactions WHERE user_id=? ORDER BY timestamp DESC LIMIT ?", 
+                               (user_id, limit)).fetchall()
+            else:
+                rows = c.execute("SELECT * FROM transactions ORDER BY timestamp DESC LIMIT ?", 
+                               (limit,)).fetchall()
             return [dict(r) for r in rows]
-    
-    # ========== آمار ==========
-    
-    def get_invite_stats(self, uid):
-        with self.conn() as c:
-            total = c.execute("SELECT COUNT(*) as c FROM users WHERE invited_by=?", (uid,)).fetchone()['c']
-            active = c.execute("SELECT COUNT(*) as c FROM users WHERE invited_by=? AND total_games>=1", (uid,)).fetchone()['c']
-            d = c.execute("SELECT diamonds FROM users WHERE user_id=?", (uid,)).fetchone()
-            return {'total': total, 'active': active, 'diamonds': d['diamonds'] if d else 0}
     
     def get_stats(self):
         with self.conn() as c:
@@ -443,6 +426,7 @@ class Database:
             banned = c.execute("SELECT COUNT(*) as c FROM users WHERE is_banned=1").fetchone()['c']
             total_balance = c.execute("SELECT COALESCE(SUM(balance),0) as t FROM users").fetchone()['t']
             total_games = c.execute("SELECT COALESCE(SUM(total_games),0) as t FROM users").fetchone()['t']
+            total_commission = c.execute("SELECT COALESCE(SUM(amount),0) as t FROM transactions WHERE type='commission'").fetchone()['t']
             today = datetime.now().strftime('%Y-%m-%d')
             today_users = c.execute("SELECT COUNT(*) as c FROM users WHERE date(join_date)=?", (today,)).fetchone()['c']
             active_today = c.execute("SELECT COUNT(*) as c FROM users WHERE date(last_activity)=?", (today,)).fetchone()['c']
@@ -452,6 +436,7 @@ class Database:
                 'banned_users': banned,
                 'total_balance': total_balance,
                 'total_games': total_games,
+                'total_commission': total_commission,
                 'today_users': today_users,
                 'active_today': active_today
             }
@@ -461,7 +446,29 @@ class Database:
             rows = c.execute("SELECT user_id, first_name, username, balance, total_games FROM users ORDER BY balance DESC LIMIT ?", (limit,)).fetchall()
             return [dict(r) for r in rows]
     
-    # ========== ماموریت ==========
+    def get_all_users(self, page=1, per_page=10, search=None):
+        with self.conn() as c:
+            if search:
+                query = "SELECT * FROM users WHERE user_id LIKE ? OR first_name LIKE ? OR username LIKE ? ORDER BY join_date DESC"
+                param = f"%{search}%"
+                rows = c.execute(query, (param, param, param)).fetchall()
+            else:
+                rows = c.execute("SELECT * FROM users ORDER BY join_date DESC LIMIT ? OFFSET ?", 
+                               (per_page, (page-1)*per_page)).fetchall()
+            total = c.execute("SELECT COUNT(*) as c FROM users").fetchone()['c']
+            return [dict(r) for r in rows], total
+    
+    def ban_user(self, user_id, reason=''):
+        with self.conn() as c:
+            c.execute("UPDATE users SET is_banned=1, ban_reason=? WHERE user_id=?", (reason, user_id))
+    
+    def unban_user(self, user_id):
+        with self.conn() as c:
+            c.execute("UPDATE users SET is_banned=0, ban_reason=NULL WHERE user_id=?", (user_id,))
+    
+    def set_admin(self, user_id, is_admin=True):
+        with self.conn() as c:
+            c.execute("UPDATE users SET is_admin=? WHERE user_id=?", (1 if is_admin else 0, user_id))
     
     def update_mission(self, uid):
         today = datetime.now().strftime('%Y-%m-%d')
@@ -514,15 +521,12 @@ router = Router()
 # ==============================================
 
 class States(StatesGroup):
-    # کاربر
     wait_card_amount = State()
     wait_receipt = State()
     wait_wd_amount = State()
     wait_wd_card = State()
     wait_wd_name = State()
     wait_room_code = State()
-    
-    # ادمین
     admin_pass = State()
     admin_bc = State()
     admin_search = State()
@@ -544,61 +548,17 @@ def main_menu():
     return builder.as_markup(resize_keyboard=True)
 
 def admin_panel():
-    """پنل مدیریت پیشرفته"""
     builder = InlineKeyboardBuilder()
-    
-    # ردیف ۱ - آمار
-    builder.row(
-        InlineKeyboardButton(text="📊 آمار کلی", callback_data="adm_stats"),
-        InlineKeyboardButton(text="📋 آمار دقیق", callback_data="adm_detailed_stats")
-    )
-    
-    # ردیف ۲ - کاربران
-    builder.row(
-        InlineKeyboardButton(text="👥 لیست کاربران", callback_data="adm_users_list"),
-        InlineKeyboardButton(text="🔍 جستجوی کاربر", callback_data="adm_search_user")
-    )
-    
-    # ردیف ۳ - مدیریت کاربر
-    builder.row(
-        InlineKeyboardButton(text="💰 تغییر موجودی", callback_data="adm_edit_balance_menu"),
-        InlineKeyboardButton(text="🚫 بن/آزاد سازی", callback_data="adm_ban_menu")
-    )
-    
-    # ردیف ۴ - ادمین‌ها
-    builder.row(
-        InlineKeyboardButton(text="👑 مدیریت ادمین‌ها", callback_data="adm_manage_admins"),
-    )
-    
-    # ردیف ۵ - تراکنش‌ها
-    builder.row(
-        InlineKeyboardButton(text="💳 تراکنش‌ها", callback_data="adm_transactions"),
-        InlineKeyboardButton(text="💎 برداشت‌ها", callback_data="adm_withdrawals")
-    )
-    
-    # ردیف ۶ - تنظیمات
-    builder.row(
-        InlineKeyboardButton(text="⚙️ تنظیمات ربات", callback_data="adm_settings"),
-        InlineKeyboardButton(text="🎮 تنظیمات بازی", callback_data="adm_game_settings")
-    )
-    
-    # ردیف ۷ - تنظیمات مالی
-    builder.row(
-        InlineKeyboardButton(text="💳 تنظیمات کارت", callback_data="adm_card_settings"),
-        InlineKeyboardButton(text="📢 تنظیمات کانال", callback_data="adm_channel_settings")
-    )
-    
-    # ردیف ۸ - عملیات
-    builder.row(
-        InlineKeyboardButton(text="📢 ارسال همگانی", callback_data="adm_broadcast"),
-        InlineKeyboardButton(text="🔒 رفع قفل کاربران", callback_data="adm_unlock_all")
-    )
-    
-    # ردیف ۹ - خروج
-    builder.row(
-        InlineKeyboardButton(text="🚪 خروج از پنل", callback_data="adm_exit")
-    )
-    
+    builder.row(InlineKeyboardButton(text="📊 آمار کلی", callback_data="adm_stats"), InlineKeyboardButton(text="📋 آمار دقیق", callback_data="adm_detailed_stats"))
+    builder.row(InlineKeyboardButton(text="👥 لیست کاربران", callback_data="adm_users_list"), InlineKeyboardButton(text="🔍 جستجوی کاربر", callback_data="adm_search_user"))
+    builder.row(InlineKeyboardButton(text="💰 تغییر موجودی", callback_data="adm_edit_balance_menu"), InlineKeyboardButton(text="🚫 بن/آزاد سازی", callback_data="adm_ban_menu"))
+    builder.row(InlineKeyboardButton(text="👑 مدیریت ادمین‌ها", callback_data="adm_manage_admins"))
+    builder.row(InlineKeyboardButton(text="💳 تراکنش‌ها", callback_data="adm_transactions"), InlineKeyboardButton(text="💎 برداشت‌ها", callback_data="adm_withdrawals"))
+    builder.row(InlineKeyboardButton(text="⚙️ تنظیمات ربات", callback_data="adm_settings"), InlineKeyboardButton(text="🎮 تنظیمات بازی", callback_data="adm_game_settings"))
+    builder.row(InlineKeyboardButton(text="💳 تنظیمات کارت", callback_data="adm_card_settings"), InlineKeyboardButton(text="📢 تنظیمات کانال", callback_data="adm_channel_settings"))
+    builder.row(InlineKeyboardButton(text="🏦 تنظیمات کارمزد", callback_data="adm_commission_settings"))
+    builder.row(InlineKeyboardButton(text="📢 ارسال همگانی", callback_data="adm_broadcast"), InlineKeyboardButton(text="🔒 رفع قفل کاربران", callback_data="adm_unlock_all"))
+    builder.row(InlineKeyboardButton(text="🚪 خروج از پنل", callback_data="adm_exit"))
     return builder.as_markup()
 
 # ==============================================
@@ -609,17 +569,39 @@ def admin_panel():
 async def cmd_start(message: Message):
     user_id = message.from_user.id
     
-    # بررسی بن
-    user = db.get_user(user_id)
-    if user and user['is_banned']:
-        reason = user.get('ban_reason', 'تخلف از قوانین')
-        return await message.answer(f"🚫 **حساب شما مسدود شده است**\n\n❌ دلیل: {reason}\n📞 پشتیبانی: {db.get_setting('support_username', '@ad_tas')}", parse_mode=ParseMode.MARKDOWN)
+    logger.info(f"👤 کاربر {user_id} استارت زد")
     
-    # بررسی جوین
-    channel_id = db.get_setting('required_channel_id', '@gozaresh_taj')
-    channel_link = db.get_setting('required_channel_link', 'https://t.me/gozaresh_taj')
+    args = message.text.split()
+    invited_by = None
+    if len(args) > 1:
+        try:
+            invited_by = int(args[1])
+            if invited_by == user_id:
+                invited_by = None
+        except:
+            pass
+    
+    db.create_user(
+        user_id,
+        message.from_user.username,
+        message.from_user.first_name,
+        message.from_user.last_name,
+        invited_by
+    )
+    
+    user = db.get_user(user_id)
+    if user and user.get('is_banned'):
+        reason = user.get('ban_reason', 'تخلف از قوانین')
+        await message.answer(
+            f"🚫 **حساب شما مسدود شده است**\n\n❌ دلیل: {reason}\n📞 پشتیبانی: {db.get_setting('support_username', '@ad_tas')}",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
     
     try:
+        channel_id = db.get_setting('required_channel_id', '@gozaresh_taj')
+        channel_link = db.get_setting('required_channel_link', 'https://t.me/gozaresh_taj')
+        
         member = await bot.get_chat_member(channel_id, user_id)
         if member.status in ['left', 'kicked']:
             builder = InlineKeyboardBuilder()
@@ -636,35 +618,27 @@ async def cmd_start(message: Message):
             )
             return
     except Exception as e:
-        logger.error(f"Channel check error: {e}")
+        logger.warning(f"خطا در بررسی جوین: {e}")
     
-    await continue_start(message)
+    await send_welcome(message)
 
-async def continue_start(message: Message):
+async def send_welcome(message: Message):
     user_id = message.from_user.id
-    
-    args = message.text.split()
-    invited_by = None
-    if len(args) > 1:
-        try:
-            invited_by = int(args[1])
-            if invited_by == user_id:
-                invited_by = None
-        except:
-            pass
-    
-    db.create_user(user_id, message.from_user.username, message.from_user.first_name, message.from_user.last_name, invited_by)
-    
     bot_username = (await bot.get_me()).username
+    balance = db.get_balance(user_id)
+    user = db.get_user(user_id)
+    diamonds = user['diamonds'] if user else 0
+    commission = db.get_commission_percent()
     
     welcome = f"""
-╔══════════════════════╗
-║   🎰 کازینو آنلاین   ║
-╚══════════════════════╝
+🎰 **به ربات کازینو خوش آمدید!**
 
-👤 **{message.from_user.first_name}** عزیز، خوش آمدید!
+👤 **{message.from_user.first_name}** عزیز
 
-💰 **موجودی:** {db.get_balance(user_id):,} سکه
+💰 **موجودی:** {balance:,} سکه
+💎 **الماس:** {diamonds:,}
+
+🏦 **کارمزد بردها:** {commission}٪
 
 👥 **لینک دعوت شما:**
 `https://t.me/{bot_username}?start={user_id}`
@@ -678,16 +652,16 @@ async def continue_start(message: Message):
 
 @router.callback_query(F.data == "check_join")
 async def check_join(callback: CallbackQuery):
-    channel_id = db.get_setting('required_channel_id', '@gozaresh_taj')
     try:
+        channel_id = db.get_setting('required_channel_id', '@gozaresh_taj')
         member = await bot.get_chat_member(channel_id, callback.from_user.id)
         if member.status not in ['left', 'kicked']:
             await callback.message.delete()
-            await continue_start(callback.message)
+            await send_welcome(callback.message)
         else:
             await callback.answer("❌ هنوز عضو نشده‌اید!", show_alert=True)
     except:
-        await callback.answer("❌ خطا! لطفاً دوباره تلاش کنید.", show_alert=True)
+        await callback.answer("✅ بررسی شد! /start را بزنید", show_alert=True)
 
 # ==============================================
 # 📋 منوهای کاربر
@@ -713,22 +687,22 @@ async def menu_profile(message: Message):
     if not u: return await message.answer("❌ /start را بزنید")
     
     stats = db.get_invite_stats(message.from_user.id)
+    commission = db.get_commission_percent()
     
     text = f"""
-╔══════════════════════╗
-║     👤 پروفایل شما    ║
-╚══════════════════════╝
+👤 **پروفایل شما**
 
-🆔 **شناسه:** `{u['user_id']}`
-👤 **نام:** {u['first_name'] or 'نامشخص'}
-📅 **عضویت:** {u['join_date'][:10] if u['join_date'] else '---'}
+🆔 شناسه: `{u['user_id']}`
+👤 نام: {u['first_name'] or 'نامشخص'}
+📅 عضویت: {u['join_date'][:10] if u['join_date'] else '---'}
 
-💰 **موجودی:** {u['balance']:,} سکه
-💎 **الماس:** {u['diamonds']:,}
-🎮 **بازی‌ها:** {u['total_games']:,}
-🏆 **برد:** {u['total_wins']:,} | 😢 **باخت:** {u['total_losses']:,}
+💰 موجودی: {u['balance']:,} سکه
+💎 الماس: {u['diamonds']:,}
+🎮 بازی‌ها: {u['total_games']:,}
+🏆 برد: {u['total_wins']:,} | 😢 باخت: {u['total_losses']:,}
+🏦 کارمزد پرداختی: {u['total_commission_paid']:,} سکه ({commission}٪)
 
-👥 **زیرمجموعه‌ها:**
+👥 زیرمجموعه‌ها:
 • کل: {stats['total']} | فعال: {stats['active']}
     """
     await message.answer(text, parse_mode=ParseMode.MARKDOWN)
@@ -740,9 +714,7 @@ async def menu_referral(message: Message):
     bot_username = (await bot.get_me()).username
     
     text = f"""
-╔══════════════════════╗
-║  👥 زیرمجموعه‌گیری    ║
-╚══════════════════════╝
+👥 **زیرمجموعه‌گیری**
 
 💎 با دعوت دوستان، الماس دریافت کنید!
 
@@ -784,10 +756,8 @@ async def menu_buy(message: Message):
     
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="💵 مبلغ دلخواه", callback_data="buy_custom"))
-    
     for p in [50, 100, 200, 500, 1000]:
         builder.row(InlineKeyboardButton(text=f"📦 {p:,} سکه = {p*rate:,} تومان", callback_data=f"buypkg_{p}"))
-    
     builder.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="back_main"))
     
     text = f"""
@@ -820,7 +790,6 @@ async def menu_withdraw(message: Message):
 
 💰 موجودی: {balance:,} سکه
 💵 معادل: {balance*rate:,} تومان
-
 ⚠️ حداقل: {db.get_setting('min_withdraw_coins', 100)} سکه
     """
     await message.answer(text, parse_mode=ParseMode.MARKDOWN, reply_markup=builder.as_markup())
@@ -832,6 +801,7 @@ async def menu_support(message: Message):
 
 @router.message(F.text == "❓ راهنما")
 async def menu_help(message: Message):
+    commission = db.get_commission_percent()
     text = f"""
 ❓ **راهنما**
 
@@ -846,6 +816,8 @@ async def menu_help(message: Message):
 
 🎯 **حریف تصادفی:**
 • منتظر بازیکن آنلاین
+
+🏦 **کارمزد:** {commission}٪ از بردها
 
 💰 **برداشت:**
 • اولین برداشت: {db.get_setting('min_invites_first_withdraw', 4)} زیرمجموعه
@@ -938,22 +910,29 @@ async def start_game(callback: CallbackQuery):
 
 async def play_vs_bot(callback: CallbackQuery, game_type: str, bet: int):
     user_id = callback.from_user.id
+    commission_percent = db.get_commission_percent()
     
     if game_type == "dice":
         chance = int(db.get_setting('dice_win_chance', 16)) / 100
         won = random.random() < chance
-        prize = bet * 4 if won else 0
+        raw_prize = bet * 4 if won else 0
         emoji = "🎲"
+        game_name = "تاس"
     else:
         chance = int(db.get_setting('lottery_win_chance', 2)) / 100
         won = random.random() < chance
-        prize = bet * 10 if won else 0
+        raw_prize = bet * 10 if won else 0
         emoji = "🎪"
+        game_name = "قرعه‌کشی"
     
-    if prize > 0:
-        db.add_balance(user_id, prize, 'win', f'برد {game_type}')
+    if raw_prize > 0:
+        # 🏦 کسر کارمزد
+        final_prize, fee = db.take_commission(user_id, raw_prize, game_name)
+        db.add_balance(user_id, final_prize, 'win', f'برد {game_name} (جایزه: {raw_prize} - کارمزد {commission_percent}٪: {fee})')
     else:
-        db.add_balance(user_id, 0, 'loss', f'باخت {game_type}')
+        final_prize = 0
+        fee = 0
+        db.add_balance(user_id, 0, 'loss', f'باخت {game_name}')
     
     db.unlock_user(user_id)
     db.update_mission(user_id)
@@ -963,12 +942,14 @@ async def play_vs_bot(callback: CallbackQuery, game_type: str, bet: int):
     builder.row(InlineKeyboardButton(text="🔙 منوی بازی‌ها", callback_data="back_games"))
     
     text = f"""
-{emoji} **نتیجه بازی**
+{emoji} **نتیجه بازی {game_name}**
 
 {'🎉 **برنده شدید!**' if won else '😢 **باختید!**'}
 
 💰 شرط: {bet:,} سکه
-🎁 جایزه: {prize:,} سکه
+🎁 جایزه ناخالص: {raw_prize:,} سکه
+🏦 کارمزد ({commission_percent}٪): {fee:,} سکه
+💎 جایزه نهایی: {final_prize:,} سکه
 💳 موجودی: {db.get_balance(user_id):,} سکه
     """
     
@@ -1048,17 +1029,30 @@ async def start_pvp_game(message: Message, room: dict, player2_id: int):
     
     if game_type in ['football', 'basketball', 'darts', 'bowling']:
         winner_id = random.choice([creator_id, player2_id])
-        prize = bet * 2
-        db.add_balance(winner_id, prize, 'win', f'برد {game_type}')
+        raw_prize = bet * 2
+        
+        # 🏦 کسر کارمزد
+        commission_percent = db.get_commission_percent()
+        final_prize, fee = db.take_commission(winner_id, raw_prize, game_type)
+        
+        db.add_balance(winner_id, final_prize, 'win', f'برد {game_type} (کارمزد: {fee})')
         loser_id = player2_id if winner_id == creator_id else creator_id
         db.add_balance(loser_id, 0, 'loss', f'باخت {game_type}')
         db.unlock_user(creator_id)
         db.unlock_user(player2_id)
-        db.finish_room(room_id, winner_id)
+        db.finish_room(room_id, winner_id, fee)
         db.update_mission(creator_id)
         db.update_mission(player2_id)
         
-        result = f"🏆 **نتیجه بازی**\n🎮 {game_names.get(game_type)}\n🎉 برنده: `{winner_id}`\n💰 جایزه: {prize:,} سکه"
+        result = f"""
+🏆 **نتیجه بازی**
+🎮 {game_names.get(game_type)}
+
+🎉 برنده: `{winner_id}`
+💰 جایزه ناخالص: {raw_prize:,} سکه
+🏦 کارمزد ({commission_percent}٪): {fee:,} سکه
+💎 جایزه نهایی: {final_prize:,} سکه
+        """
         
         for uid in [creator_id, player2_id]:
             try:
@@ -1124,6 +1118,7 @@ async def determine_pvp_winner(room: dict):
     cid = room['creator_id']
     pid = room['player2_id']
     rid = room['room_id']
+    commission_percent = db.get_commission_percent()
     
     if game_type == 'rps':
         wins = {'rock': 'scissors', 'paper': 'rock', 'scissors': 'paper'}
@@ -1141,17 +1136,32 @@ async def determine_pvp_winner(room: dict):
         db.add_balance(cid, bet, 'refund', 'مساوی')
         db.add_balance(pid, bet, 'refund', 'مساوی')
         result = f"🤝 **مساوی!**\n👤 ۱: {p1}\n👤 ۲: {p2}\n💰 سکه‌ها برگشت خورد."
+        db.finish_room(rid, None, 0)
     else:
         winner_id = cid if winner == 1 else pid
-        prize = bet * 2
-        db.add_balance(winner_id, prize, 'win', 'برد')
+        raw_prize = bet * 2
+        
+        # 🏦 کسر کارمزد
+        final_prize, fee = db.take_commission(winner_id, raw_prize, game_type)
+        
+        db.add_balance(winner_id, final_prize, 'win', f'برد (کارمزد: {fee})')
         loser_id = pid if winner == 1 else cid
         db.add_balance(loser_id, 0, 'loss', 'باخت')
-        result = f"🏆 **نتیجه**\n👤 ۱: {p1}\n👤 ۲: {p2}\n🎉 برنده: `{winner_id}`\n💰 {prize:,} سکه"
+        db.finish_room(rid, winner_id, fee)
+        
+        result = f"""
+🏆 **نتیجه**
+👤 ۱: {p1}
+👤 ۲: {p2}
+
+🎉 برنده: `{winner_id}`
+💰 جایزه ناخالص: {raw_prize:,} سکه
+🏦 کارمزد ({commission_percent}٪): {fee:,} سکه
+💎 جایزه نهایی: {final_prize:,} سکه
+        """
     
     db.unlock_user(cid)
     db.unlock_user(pid)
-    db.finish_room(rid, cid if winner == 1 else (pid if winner == 2 else None))
     db.update_mission(cid)
     db.update_mission(pid)
     
@@ -1405,7 +1415,7 @@ async def claim_mission(callback: CallbackQuery):
         await callback.answer("❌ نمی‌توانید دریافت کنید!", show_alert=True)
 
 # ==============================================
-# 👑 پنل مدیریت پیشرفته
+# 👑 پنل مدیریت
 # ==============================================
 
 @router.message(Command("admin"))
@@ -1431,18 +1441,20 @@ async def admin_check(message: Message, state: FSMContext):
 @router.callback_query(F.data == "adm_stats")
 async def adm_stats(callback: CallbackQuery):
     stats = db.get_stats()
+    commission = db.get_commission_percent()
+    
     text = f"""
-📊 **آمار کلی ربات**
+📊 **آمار کلی**
 
-👥 کل کاربران: {stats['total_users']:,}
-🚫 کاربران مسدود: {stats['banned_users']:,}
-👤 کاربران امروز: {stats['today_users']:,}
-🟢 فعال امروز: {stats['active_today']:,}
+👥 کاربران: {stats['total_users']:,}
+🚫 مسدود: {stats['banned_users']:,}
+👤 امروز: {stats['today_users']:,}
+🟢 فعال: {stats['active_today']:,}
 
-💰 مجموع موجودی: {stats['total_balance']:,} سکه
-🎮 کل بازی‌ها: {stats['total_games']:,}
-
-⏳ صف انتظار: {db.get_queue_count()} نفر
+💰 موجودی کل: {stats['total_balance']:,} سکه
+🎮 بازی‌ها: {stats['total_games']:,}
+🏦 کارمزد کل: {stats['total_commission']:,} سکه ({commission}٪)
+⏳ صف: {db.get_queue_count()} نفر
     """
     
     builder = InlineKeyboardBuilder()
@@ -1455,24 +1467,11 @@ async def adm_stats(callback: CallbackQuery):
 async def adm_detailed_stats(callback: CallbackQuery):
     stats = db.get_stats()
     top = db.get_top_users(5)
+    commission = db.get_commission_percent()
     
-    text = f"""
-📋 **آمار دقیق**
-
-📊 **کاربران:**
-• کل: {stats['total_users']:,}
-• امروز: {stats['today_users']:,}
-• فعال: {stats['active_today']:,}
-• مسدود: {stats['banned_users']:,}
-
-💰 **مالی:**
-• موجودی کل: {stats['total_balance']:,} سکه
-• بازی‌ها: {stats['total_games']:,}
-
-🏆 **برترین کاربران:**
-"""
+    text = f"📋 **آمار دقیق**\n\n👥 کل: {stats['total_users']:,}\n💰 موجودی: {stats['total_balance']:,}\n🏦 کارمزد: {stats['total_commission']:,} ({commission}٪)\n\n🏆 **برترین‌ها:**\n"
     for i, u in enumerate(top, 1):
-        text += f"{i}. `{u['user_id']}` - {u['first_name'] or '---'} - 💰 {u['balance']:,}\n"
+        text += f"{i}. `{u['user_id']}` - 💰 {u['balance']:,}\n"
     
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_back"))
@@ -1485,11 +1484,10 @@ async def adm_detailed_stats(callback: CallbackQuery):
 async def adm_users_list(callback: CallbackQuery):
     users, total = db.get_all_users(page=1, per_page=5)
     
-    text = f"👥 **لیست کاربران** (کل: {total})\n\n"
+    text = f"👥 **کاربران** ({total})\n\n"
     for u in users:
         ban = "🚫" if u['is_banned'] else "✅"
-        admin = "👑" if u['is_admin'] else "👤"
-        text += f"{admin}{ban} `{u['user_id']}` - {u['first_name'] or '---'} - 💰 {u['balance']:,}\n"
+        text += f"{ban} `{u['user_id']}` - {u['first_name'] or '---'} - 💰 {u['balance']:,}\n"
     
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="🔍 جستجو", callback_data="adm_search_user"))
@@ -1500,7 +1498,7 @@ async def adm_users_list(callback: CallbackQuery):
 @router.callback_query(F.data == "adm_search_user")
 async def adm_search_user(callback: CallbackQuery, state: FSMContext):
     await state.set_state(States.admin_search)
-    await callback.message.edit_text("🔍 **شناسه یا نام کاربر را وارد کنید:**", parse_mode=ParseMode.MARKDOWN)
+    await callback.message.edit_text("🔍 شناسه یا نام کاربر را وارد کنید:", parse_mode=ParseMode.MARKDOWN)
 
 @router.message(States.admin_search)
 async def adm_search_result(message: Message, state: FSMContext):
@@ -1510,12 +1508,10 @@ async def adm_search_result(message: Message, state: FSMContext):
     if not users:
         await message.answer("❌ کاربری یافت نشد!")
     else:
-        text = "🔍 **نتایج جستجو:**\n\n"
-        for u in users[:10]:
-            text += f"🆔 `{u['user_id']}` - {u['first_name'] or '---'} - 💰 {u['balance']:,}\n"
-        
+        text = "🔍 **نتایج:**\n\n"
         builder = InlineKeyboardBuilder()
         for u in users[:5]:
+            text += f"🆔 `{u['user_id']}` - {u['first_name'] or '---'} - 💰 {u['balance']:,}\n"
             builder.row(InlineKeyboardButton(
                 text=f"👤 {u['first_name'] or u['user_id']}",
                 callback_data=f"adm_user_detail_{u['user_id']}"
@@ -1530,6 +1526,7 @@ async def adm_search_result(message: Message, state: FSMContext):
 async def adm_user_detail(callback: CallbackQuery):
     user_id = int(callback.data.split("_")[3])
     u = db.get_user(user_id)
+    commission = db.get_commission_percent()
     
     if not u:
         return await callback.answer("❌ کاربر یافت نشد!", show_alert=True)
@@ -1537,17 +1534,18 @@ async def adm_user_detail(callback: CallbackQuery):
     text = f"""
 👤 **جزئیات کاربر**
 
-🆔 شناسه: `{u['user_id']}`
-👤 نام: {u['first_name'] or '---'} {u['last_name'] or ''}
-📅 عضویت: {u['join_date'][:10] if u['join_date'] else '---'}
+🆔 `{u['user_id']}`
+👤 {u['first_name'] or '---'} {u['last_name'] or ''}
+📅 {u['join_date'][:10] if u['join_date'] else '---'}
 
-💰 موجودی: {u['balance']:,} سکه
+💰 موجودی: {u['balance']:,}
 💎 الماس: {u['diamonds']:,}
 🎮 بازی‌ها: {u['total_games']:,}
 🏆 برد: {u['total_wins']:,} | 😢 باخت: {u['total_losses']:,}
+🏦 کارمزد پرداختی: {u['total_commission_paid']:,} ({commission}٪)
 
-🚫 وضعیت: {'مسدود' if u['is_banned'] else 'فعال'}
-👑 ادمین: {'بله' if u['is_admin'] else 'خیر'}
+🚫 {'مسدود' if u['is_banned'] else 'فعال'}
+👑 {'ادمین' if u['is_admin'] else 'کاربر عادی'}
 """
     
     builder = InlineKeyboardBuilder()
@@ -1575,29 +1573,7 @@ async def adm_user_detail(callback: CallbackQuery):
 @router.callback_query(F.data == "adm_edit_balance_menu")
 async def adm_edit_balance_menu(callback: CallbackQuery, state: FSMContext):
     await state.set_state(States.admin_edit_balance)
-    await callback.message.edit_text(
-        "💰 **تغییر موجودی کاربر**\n\n"
-        "📝 ابتدا شناسه کاربر را وارد کنید:",
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-@router.message(States.admin_edit_balance)
-async def adm_edit_balance_user(message: Message, state: FSMContext):
-    try:
-        user_id = int(message.text)
-        u = db.get_user(user_id)
-        if not u:
-            return await message.answer("❌ کاربر یافت نشد!")
-        
-        await state.update_data(edit_uid=user_id)
-        await message.answer(
-            f"👤 کاربر: {u['first_name'] or user_id}\n💰 موجودی فعلی: {u['balance']:,} سکه\n\n"
-            f"📝 موجودی جدید را وارد کنید (یا +amount / -amount):"
-        )
-    except:
-        await message.answer("❌ شناسه معتبر وارد کنید!")
-
-# ==== تنظیم موجودی ====
+    await callback.message.edit_text("💰 شناسه کاربر را وارد کنید:", parse_mode=ParseMode.MARKDOWN)
 
 @router.callback_query(F.data.startswith("adm_set_balance_"))
 async def adm_set_balance(callback: CallbackQuery, state: FSMContext):
@@ -1606,21 +1582,31 @@ async def adm_set_balance(callback: CallbackQuery, state: FSMContext):
     u = db.get_user(user_id)
     
     await callback.message.edit_text(
-        f"👤 کاربر: {u['first_name'] or user_id}\n💰 موجودی فعلی: {u['balance']:,} سکه\n\n"
-        f"📝 موجودی جدید را وارد کنید:",
+        f"👤 {u['first_name'] or user_id}\n💰 موجودی: {u['balance']:,}\n\n📝 موجودی جدید را وارد کنید:",
         parse_mode=ParseMode.MARKDOWN
     )
     await state.set_state(States.admin_edit_balance)
 
-# ==== بن کردن ====
+@router.message(States.admin_edit_balance)
+async def adm_edit_balance_process(message: Message, state: FSMContext):
+    data = await state.get_data()
+    user_id = data.get('edit_uid')
+    
+    try:
+        amount = int(message.text)
+        db.set_balance(user_id, amount, message.from_user.id)
+        await message.answer(f"✅ موجودی کاربر `{user_id}` به {amount:,} سکه تغییر یافت.", parse_mode=ParseMode.MARKDOWN)
+    except:
+        await message.answer("❌ عدد معتبر وارد کنید!")
+    
+    await state.clear()
+
+# ==== بن ====
 
 @router.callback_query(F.data == "adm_ban_menu")
 async def adm_ban_menu(callback: CallbackQuery, state: FSMContext):
     await state.set_state(States.admin_ban_reason)
-    await callback.message.edit_text(
-        "🚫 **مسدود کردن کاربر**\n\n📝 شناسه کاربر را وارد کنید:",
-        parse_mode=ParseMode.MARKDOWN
-    )
+    await callback.message.edit_text("🚫 شناسه کاربر را وارد کنید:", parse_mode=ParseMode.MARKDOWN)
 
 @router.callback_query(F.data.startswith("adm_ban_"))
 async def adm_ban_user(callback: CallbackQuery, state: FSMContext):
@@ -1661,7 +1647,7 @@ async def adm_manage_admins(callback: CallbackQuery):
     with db.conn() as c:
         admins = c.execute("SELECT * FROM users WHERE is_admin=1").fetchall()
     
-    text = "👑 **لیست ادمین‌ها:**\n\n"
+    text = "👑 **ادمین‌ها:**\n\n"
     for a in admins:
         text += f"• `{a['user_id']}` - {a['first_name'] or '---'}\n"
     
@@ -1700,14 +1686,14 @@ async def adm_remove_admin(callback: CallbackQuery):
     db.set_admin(user_id, False)
     await callback.answer("✅ کاربر از ادمین حذف شد!", show_alert=True)
 
-# ==== تراکنش‌ها و برداشت‌ها ====
+# ==== تراکنش‌ها ====
 
 @router.callback_query(F.data == "adm_transactions")
 async def adm_transactions(callback: CallbackQuery):
     txs = db.get_transactions(limit=10)
     text = "💳 **آخرین تراکنش‌ها:**\n\n"
     for tx in txs:
-        text += f"#{tx['id']} | 👤 `{tx['user_id']}` | {tx['type']}: {tx['amount']:,}\n📝 {tx['description'][:30]}\n🕐 {tx['timestamp'][:19]}\n\n"
+        text += f"#{tx['id']} | 👤 `{tx['user_id']}` | {tx['type']}: {tx['amount']:,}\n"
     
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_back"))
@@ -1719,10 +1705,10 @@ async def adm_withdrawals(callback: CallbackQuery):
     reqs = db.get_pending_withdrawals()
     
     if not reqs:
-        return await callback.message.edit_text("✅ هیچ درخواست برداشتی نیست.", reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_back")).as_markup())
+        return await callback.message.edit_text("✅ هیچ درخواستی نیست.", reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_back")).as_markup())
     
     r = reqs[0]
-    text = f"💎 **درخواست #{r['id']}**\n👤 {r['first_name']} ({r['user_id']})\n💰 {r['amount_coins']:,} سکه = {r['amount_toman']:,} تومان\n💳 `{r['card_number']}`\n👤 {r['card_holder']}"
+    text = f"💎 #{r['id']}\n👤 {r['first_name']}\n💰 {r['amount_coins']:,} سکه\n💳 `{r['card_number']}`"
     
     builder = InlineKeyboardBuilder()
     builder.row(
@@ -1738,9 +1724,9 @@ async def adm_user_tx(callback: CallbackQuery):
     user_id = int(callback.data.split("_")[3])
     txs = db.get_transactions(user_id, 10)
     
-    text = f"📋 **تراکنش‌های کاربر {user_id}:**\n\n"
+    text = f"📋 **تراکنش‌های {user_id}:**\n\n"
     for tx in txs:
-        text += f"#{tx['id']} | {tx['type']}: {tx['amount']:,} | {tx['description'][:30]}\n"
+        text += f"#{tx['id']} | {tx['type']}: {tx['amount']:,}\n"
     
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"adm_user_detail_{user_id}"))
@@ -1751,25 +1737,38 @@ async def adm_user_tx(callback: CallbackQuery):
 
 @router.callback_query(F.data == "adm_settings")
 async def adm_settings(callback: CallbackQuery):
-    settings = db.get_all_settings()
+    s = db.get_all_settings()
     
-    text = "⚙️ **تنظیمات فعلی ربات:**\n\n"
-    text += f"💳 شماره کارت: `{settings.get('card_number', '---')}`\n"
-    text += f"👤 صاحب کارت: {settings.get('card_holder', '---')}\n"
-    text += f"📞 پشتیبانی: {settings.get('support_username', '---')}\n"
-    text += f"📢 کانال: {settings.get('required_channel_id', '---')}\n"
-    text += f"💰 نرخ سکه: {settings.get('coin_to_toman', '---')} تومان\n"
-    text += f"⚠️ حداقل برداشت: {settings.get('min_withdraw_coins', '---')} سکه\n"
-    text += f"👥 حداقل دعوت: {settings.get('min_invites_first_withdraw', '---')}\n"
-    text += f"🎲 شانس تاس: {settings.get('dice_win_chance', '---')}٪\n"
-    text += f"🎪 شانس قرعه‌کشی: {settings.get('lottery_win_chance', '---')}٪\n"
-    text += f"🎮 قیمت‌ها: {settings.get('game_prices', '---')}\n"
+    text = "⚙️ **تنظیمات:**\n\n"
+    text += f"💳 کارت: `{s.get('card_number', '---')}`\n"
+    text += f"📞 پشتیبانی: {s.get('support_username', '---')}\n"
+    text += f"📢 کانال: {s.get('required_channel_id', '---')}\n"
+    text += f"💰 نرخ: {s.get('coin_to_toman', '---')} تومان\n"
+    text += f"⚠️ حداقل برداشت: {s.get('min_withdraw_coins', '---')}\n"
+    text += f"👥 حداقل دعوت: {s.get('min_invites_first_withdraw', '---')}\n"
+    text += f"🏦 کارمزد: {s.get('commission_percent', '---')}٪\n"
+    text += f"🎲 شانس تاس: {s.get('dice_win_chance', '---')}٪\n"
+    text += f"🎪 شانس قرعه‌کشی: {s.get('lottery_win_chance', '---')}٪\n"
     
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="✏️ ویرایش تنظیمات", callback_data="adm_edit_setting"))
     builder.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_back"))
     
     await callback.message.edit_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=builder.as_markup())
+
+@router.callback_query(F.data == "adm_commission_settings")
+async def adm_commission_settings(callback: CallbackQuery):
+    commission = db.get_commission_percent()
+    total = db.get_total_commission()
+    
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="✏️ تغییر درصد کارمزد", callback_data="adm_set_commission_percent"))
+    builder.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_settings"))
+    
+    await callback.message.edit_text(
+        f"🏦 **تنظیمات کارمزد**\n\n📊 درصد فعلی: {commission}٪\n💰 کل کارمزد دریافتی: {total:,} سکه",
+        parse_mode=ParseMode.MARKDOWN, reply_markup=builder.as_markup()
+    )
 
 @router.callback_query(F.data == "adm_edit_setting")
 async def adm_edit_setting(callback: CallbackQuery):
@@ -1782,12 +1781,13 @@ async def adm_edit_setting(callback: CallbackQuery):
         ("📢 آیدی کانال", "required_channel_id"),
         ("🔗 لینک کانال", "required_channel_link"),
         ("📊 کانال گزارشات", "withdraw_log_channel"),
-        ("💰 نرخ سکه (تومان)", "coin_to_toman"),
+        ("💰 نرخ سکه", "coin_to_toman"),
         ("⚠️ حداقل برداشت", "min_withdraw_coins"),
         ("👥 حداقل دعوت", "min_invites_first_withdraw"),
-        ("🎲 شانس تاس (٪)", "dice_win_chance"),
-        ("🎪 شانس قرعه‌کشی (٪)", "lottery_win_chance"),
-        ("🎯 ماموریت (تعداد)", "daily_mission_games"),
+        ("🏦 درصد کارمزد", "commission_percent"),
+        ("🎲 شانس تاس", "dice_win_chance"),
+        ("🎪 شانس قرعه‌کشی", "lottery_win_chance"),
+        ("🎯 تعداد ماموریت", "daily_mission_games"),
         ("🎁 جایزه ماموریت", "daily_mission_reward"),
     ]
     
@@ -1797,7 +1797,7 @@ async def adm_edit_setting(callback: CallbackQuery):
     builder.row(InlineKeyboardButton(text="🎮 قیمت‌های بازی", callback_data="adm_set_game_prices"))
     builder.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_settings"))
     
-    await callback.message.edit_text("⚙️ **یک تنظیم را برای ویرایش انتخاب کنید:**", parse_mode=ParseMode.MARKDOWN, reply_markup=builder.as_markup())
+    await callback.message.edit_text("⚙️ انتخاب کنید:", parse_mode=ParseMode.MARKDOWN, reply_markup=builder.as_markup())
 
 @router.callback_query(F.data.startswith("adm_set_"))
 async def adm_set_setting(callback: CallbackQuery, state: FSMContext):
@@ -1808,7 +1808,7 @@ async def adm_set_setting(callback: CallbackQuery, state: FSMContext):
     await state.set_state(States.admin_edit_setting)
     
     await callback.message.edit_text(
-        f"⚙️ **ویرایش: {key}**\n\n📝 مقدار فعلی: `{current}`\n\n✏️ مقدار جدید را وارد کنید:",
+        f"⚙️ **{key}**\n\n📝 فعلی: `{current}`\n\n✏️ مقدار جدید:",
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -1820,7 +1820,7 @@ async def adm_set_game_prices(callback: CallbackQuery, state: FSMContext):
     await state.set_state(States.admin_edit_setting)
     
     await callback.message.edit_text(
-        f"🎮 **قیمت‌های بازی**\n\n📝 فعلی: {current}\n\n✏️ قیمت‌های جدید را با کاما وارد کنید:\nمثال: 50,100,200,500,1000",
+        f"🎮 **قیمت‌ها**\n\n📝 فعلی: {current}\n\n✏️ جدید (با کاما): 50,100,200,500,1000",
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -1834,35 +1834,31 @@ async def adm_save_setting(message: Message, state: FSMContext):
         try:
             value = [int(x.strip()) for x in value.split(',')]
         except:
-            return await message.answer("❌ فرمت نامعتبر! مثال: 50,100,200")
+            return await message.answer("❌ فرمت نامعتبر!")
     elif key in ['coin_to_toman', 'min_withdraw_coins', 'min_invites_first_withdraw', 
-                 'dice_win_chance', 'lottery_win_chance', 'daily_mission_games', 'daily_mission_reward']:
+                 'dice_win_chance', 'lottery_win_chance', 'daily_mission_games', 
+                 'daily_mission_reward', 'commission_percent']:
         try:
             value = int(value)
         except:
             return await message.answer("❌ عدد وارد کنید!")
     
     db.set_setting(key, value)
-    await message.answer(f"✅ تنظیم `{key}` با موفقیت به `{value}` تغییر یافت.", reply_markup=await admin_back_keyboard())
+    await message.answer(f"✅ `{key}` به `{value}` تغییر یافت.")
     await state.clear()
 
-async def admin_back_keyboard():
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🔙 بازگشت به پنل", callback_data="adm_back"))
-    return builder.as_markup()
-
 @router.callback_query(F.data == "adm_card_settings")
-async def adm_card_settings(callback: CallbackQuery, state: FSMContext):
+async def adm_card_settings(callback: CallbackQuery):
     card = db.get_setting('card_number', '6062561009737464')
     holder = db.get_setting('card_holder', 'مجاور')
     
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="✏️ ویرایش شماره کارت", callback_data="adm_set_card_number"))
-    builder.row(InlineKeyboardButton(text="✏️ ویرایش نام صاحب", callback_data="adm_set_card_holder"))
+    builder.row(InlineKeyboardButton(text="✏️ شماره کارت", callback_data="adm_set_card_number"))
+    builder.row(InlineKeyboardButton(text="✏️ نام صاحب", callback_data="adm_set_card_holder"))
     builder.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_settings"))
     
     await callback.message.edit_text(
-        f"💳 **تنظیمات کارت**\n\n📌 شماره: `{card}`\n👤 صاحب: {holder}",
+        f"💳 **کارت**\n\n📌 `{card}`\n👤 {holder}",
         parse_mode=ParseMode.MARKDOWN, reply_markup=builder.as_markup()
     )
 
@@ -1873,13 +1869,13 @@ async def adm_channel_settings(callback: CallbackQuery):
     log_ch = db.get_setting('withdraw_log_channel', '@gozaresh_taj')
     
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="✏️ آیدی کانال", callback_data="adm_set_required_channel_id"))
-    builder.row(InlineKeyboardButton(text="✏️ لینک کانال", callback_data="adm_set_required_channel_link"))
-    builder.row(InlineKeyboardButton(text="✏️ کانال گزارشات", callback_data="adm_set_withdraw_log_channel"))
+    builder.row(InlineKeyboardButton(text="✏️ آیدی", callback_data="adm_set_required_channel_id"))
+    builder.row(InlineKeyboardButton(text="✏️ لینک", callback_data="adm_set_required_channel_link"))
+    builder.row(InlineKeyboardButton(text="✏️ گزارشات", callback_data="adm_set_withdraw_log_channel"))
     builder.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_settings"))
     
     await callback.message.edit_text(
-        f"📢 **تنظیمات کانال**\n\n📌 کانال: {ch_id}\n🔗 لینک: {ch_link}\n📊 گزارشات: {log_ch}",
+        f"📢 **کانال**\n\n📌 {ch_id}\n🔗 {ch_link}\n📊 {log_ch}",
         parse_mode=ParseMode.MARKDOWN, reply_markup=builder.as_markup()
     )
 
@@ -1888,33 +1884,26 @@ async def adm_game_settings(callback: CallbackQuery):
     dice = db.get_setting('dice_win_chance', 16)
     lottery = db.get_setting('lottery_win_chance', 2)
     prices = db.get_setting('game_prices', [50, 100, 200, 500, 1000])
-    mission_games = db.get_setting('daily_mission_games', 3)
-    mission_reward = db.get_setting('daily_mission_reward', 50)
+    mg = db.get_setting('daily_mission_games', 3)
+    mr = db.get_setting('daily_mission_reward', 50)
     
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="🎲 شانس تاس", callback_data="adm_set_dice_win_chance"))
     builder.row(InlineKeyboardButton(text="🎪 شانس قرعه‌کشی", callback_data="adm_set_lottery_win_chance"))
-    builder.row(InlineKeyboardButton(text="🎮 قیمت‌های بازی", callback_data="adm_set_game_prices"))
-    builder.row(InlineKeyboardButton(text="🎯 تعداد ماموریت", callback_data="adm_set_daily_mission_games"))
-    builder.row(InlineKeyboardButton(text="🎁 جایزه ماموریت", callback_data="adm_set_daily_mission_reward"))
+    builder.row(InlineKeyboardButton(text="🎮 قیمت‌ها", callback_data="adm_set_game_prices"))
+    builder.row(InlineKeyboardButton(text="🎯 ماموریت", callback_data="adm_set_daily_mission_games"))
+    builder.row(InlineKeyboardButton(text="🎁 جایزه", callback_data="adm_set_daily_mission_reward"))
     builder.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm_settings"))
     
     await callback.message.edit_text(
-        f"🎮 **تنظیمات بازی**\n\n"
-        f"🎲 شانس تاس: {dice}٪\n"
-        f"🎪 شانس قرعه‌کشی: {lottery}٪\n"
-        f"💰 قیمت‌ها: {prices}\n"
-        f"🎯 ماموریت: {mission_games} بازی\n"
-        f"🎁 جایزه: {mission_reward} سکه",
+        f"🎮 **بازی**\n\n🎲 تاس: {dice}٪\n🎪 قرعه‌کشی: {lottery}٪\n💰 قیمت‌ها: {prices}\n🎯 ماموریت: {mg}\n🎁 جایزه: {mr}",
         parse_mode=ParseMode.MARKDOWN, reply_markup=builder.as_markup()
     )
-
-# ==== عملیات ====
 
 @router.callback_query(F.data == "adm_broadcast")
 async def adm_broadcast(callback: CallbackQuery, state: FSMContext):
     await state.set_state(States.admin_bc)
-    await callback.message.edit_text("📢 پیام همگانی را ارسال کنید:")
+    await callback.message.edit_text("📢 پیام را ارسال کنید:")
 
 @router.message(States.admin_bc)
 async def adm_send_broadcast(message: Message, state: FSMContext):
@@ -1928,19 +1917,19 @@ async def adm_send_broadcast(message: Message, state: FSMContext):
             pass
         await asyncio.sleep(0.05)
     
-    await message.answer(f"✅ پیام به {s} کاربر ارسال شد.", reply_markup=await admin_back_keyboard())
+    await message.answer(f"✅ به {s} کاربر ارسال شد.")
     await state.clear()
 
 @router.callback_query(F.data == "adm_unlock_all")
 async def adm_unlock_all(callback: CallbackQuery):
     with db.conn() as c:
         c.execute("DELETE FROM game_locks")
-    await callback.answer("✅ قفل همه کاربران باز شد!", show_alert=True)
+    await callback.answer("✅ قفل‌ها باز شد!", show_alert=True)
 
 @router.callback_query(F.data == "adm_exit")
 async def adm_exit(callback: CallbackQuery):
     await callback.message.delete()
-    await callback.message.answer("🚪 از پنل خارج شدید.", reply_markup=main_menu())
+    await callback.message.answer("🚪 خارج شدید.", reply_markup=main_menu())
 
 @router.callback_query(F.data == "adm_back")
 async def adm_back(callback: CallbackQuery):
@@ -1978,7 +1967,7 @@ async def error_handler(update, exception):
 async def main():
     dp.include_router(router)
     await bot.delete_webhook(drop_pending_updates=True)
-    logger.info("🚀 Bot started!")
+    logger.info("🚀 Bot started with commission system!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
