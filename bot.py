@@ -1,9 +1,10 @@
+```python
 import logging
 import sqlite3
 import random
-import asyncio
+import re
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Any
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -22,7 +23,7 @@ OWNER_ID = 7548145568
 CARD_NUMBER = "6062561009737464"
 CARD_OWNER = "مجاور"
 MIN_WITHDRAWAL = 100_000  # تومان
-BOT_USERNAME = "tasbist_bot"  # برای لینک دعوت
+BOT_USERNAME = "tasbist_bot"
 
 # --- Logging ---
 logging.basicConfig(
@@ -114,7 +115,7 @@ def init_db():
     conn.close()
 
 # --- Helper Functions ---
-def get_user(user_id: int) -> Optional[dict]:
+def get_user(user_id: int) -> Optional[Dict[str, Any]]:
     conn = get_db()
     c = conn.cursor()
     c.execute("SELECT * FROM users WHERE id = ?", (user_id,))
@@ -373,7 +374,7 @@ def play_rps(user_choice: str) -> Tuple[str, float, bool, str]:
     odds = 1.8 if win else 1.0 if result == "draw" else 0.0
     return bot_choice, odds, win, result
 
-# --- Keyboard Builders (with colored buttons) ---
+# --- Keyboard Builders (با دکمه‌های زیبا) ---
 def main_menu_keyboard():
     keyboard = [
         [InlineKeyboardButton("🎮 بازی‌ها", callback_data="games")],
@@ -404,7 +405,7 @@ def game_outcome_keyboard(game: str, outcomes: list):
         if game == "dice":
             label = f"عدد {item}"
             callback = f"outcome_{game}_{item}"
-        elif game == "bowling" or game == "lottery":
+        elif game in ["bowling", "lottery"]:
             label = f"{item['name']} ({item['odds']}x)"
             callback = f"outcome_{game}_{item['name']}"
         elif game == "rps":
@@ -419,7 +420,6 @@ def bet_amount_keyboard():
     keyboard = []
     row = []
     for i, amt in enumerate(amounts):
-        # نمایش با فرمت تومان
         label = f"{amt:,} تومان"
         row.append(InlineKeyboardButton(label, callback_data=f"bet_{amt}"))
         if (i+1) % 3 == 0:
@@ -427,7 +427,7 @@ def bet_amount_keyboard():
             row = []
     if row:
         keyboard.append(row)
-    keyboard.append([InlineKeyboardButton("مبلغ دلخواه", callback_data="bet_custom")])
+    keyboard.append([InlineKeyboardButton("💰 مبلغ دلخواه", callback_data="bet_custom")])
     keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data="games")])
     return InlineKeyboardMarkup(keyboard)
 
@@ -448,10 +448,10 @@ def admin_panel_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-def admin_action_keyboard(deposit_id: int, action_type: str):
+def admin_action_keyboard(item_id: int, action_type: str):
     keyboard = [
-        [InlineKeyboardButton("✅ تایید", callback_data=f"admin_approve_{action_type}_{deposit_id}")],
-        [InlineKeyboardButton("❌ رد", callback_data=f"admin_reject_{action_type}_{deposit_id}")],
+        [InlineKeyboardButton("✅ تایید", callback_data=f"admin_approve_{action_type}_{item_id}")],
+        [InlineKeyboardButton("❌ رد", callback_data=f"admin_reject_{action_type}_{item_id}")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -478,8 +478,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
         create_user(user_id, username, first_name, ref_id)
         if ref_id:
-            # reward will be given after first game
-            pass
+            pass  # reward after first game
     await update.message.reply_text(
         "🌟 به ربات بازی‌ها خوش آمدید!\n"
         "یکی از گزینه‌های زیر را انتخاب کنید:",
@@ -535,7 +534,7 @@ async def game_outcome_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
     data = query.data.split("_")
     game = data[1]
-    choice = "_".join(data[2:])
+    choice = "_".join(data[2:])  # برای مواردی که اسم چند کلمه‌ای دارد
     context.user_data["game_outcome"] = choice
     odds = None
     if game == "dice":
@@ -743,7 +742,7 @@ async def deposit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             row = []
     if row:
         keyboard.append(row)
-    keyboard.append([InlineKeyboardButton("مبلغ دلخواه", callback_data="deposit_custom")])
+    keyboard.append([InlineKeyboardButton("💰 مبلغ دلخواه", callback_data="deposit_custom")])
     keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data="menu")])
     await query.edit_message_text(
         "💰 افزایش موجودی\n\n"
