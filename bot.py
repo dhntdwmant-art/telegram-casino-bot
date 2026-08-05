@@ -4,19 +4,15 @@ import sqlite3
 import random
 import re
 import json
-from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any, Tuple
-from decimal import Decimal
+from datetime import datetime
+from typing import Optional, List, Dict, Any
 
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import (
-    InlineKeyboardMarkup, InlineKeyboardButton,
-    CallbackQuery, Message, ParseMode
-)
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 
@@ -33,7 +29,7 @@ MIN_WITHDRAWAL = 100_000
 MIN_DEPOSIT = 10_000
 REFERRAL_REWARD = 10_000
 
-# Game odds (with house edge)
+# Game odds (with house edge ~10-20%)
 DICE_ODDS = 5.0
 RPS_ODDS = 1.8
 
@@ -82,7 +78,6 @@ def init_database():
     conn = get_db()
     c = conn.cursor()
     
-    # Users table
     c.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,7 +104,6 @@ def init_database():
         )
     """)
     
-    # Games table
     c.execute("""
         CREATE TABLE IF NOT EXISTS games (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -125,7 +119,6 @@ def init_database():
         )
     """)
     
-    # Deposits table
     c.execute("""
         CREATE TABLE IF NOT EXISTS deposits (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -140,7 +133,6 @@ def init_database():
         )
     """)
     
-    # Withdrawals table
     c.execute("""
         CREATE TABLE IF NOT EXISTS withdrawals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -156,7 +148,6 @@ def init_database():
         )
     """)
     
-    # Transactions table
     c.execute("""
         CREATE TABLE IF NOT EXISTS transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -170,7 +161,6 @@ def init_database():
         )
     """)
     
-    # Referrals table
     c.execute("""
         CREATE TABLE IF NOT EXISTS referrals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -182,7 +172,6 @@ def init_database():
         )
     """)
     
-    # Settings table
     c.execute("""
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
@@ -191,7 +180,6 @@ def init_database():
         )
     """)
     
-    # Insert default settings
     default_settings = {
         'card_number': CARD_NUMBER,
         'card_owner': CARD_OWNER,
@@ -210,7 +198,7 @@ def init_database():
     
     conn.commit()
     conn.close()
-    logger.info("Database initialized successfully")
+    logger.info("Database initialized")
 
 # ============================================================================
 # Database Functions
@@ -341,14 +329,6 @@ def approve_deposit(deposit_id: int, admin_id: int = None):
     row = c.fetchone()
     if row:
         update_wallet(row['user_id'], row['amount'])
-        conn2 = get_db()
-        c2 = conn2.cursor()
-        c2.execute("""
-            INSERT INTO transactions (user_id, amount, type, description, admin_id)
-            VALUES (?, ?, 'deposit', ?, ?)
-        """, (row['user_id'], row['amount'], f"واریز #{deposit_id}", admin_id))
-        conn2.commit()
-        conn2.close()
     conn.commit()
     conn.close()
 
@@ -395,14 +375,6 @@ def approve_withdrawal(withdrawal_id: int, admin_id: int = None):
     row = c.fetchone()
     if row:
         update_wallet(row['user_id'], -row['amount'])
-        conn2 = get_db()
-        c2 = conn2.cursor()
-        c2.execute("""
-            INSERT INTO transactions (user_id, amount, type, description, admin_id)
-            VALUES (?, ?, 'withdrawal', ?, ?)
-        """, (row['user_id'], -row['amount'], f"برداشت #{withdrawal_id}", admin_id))
-        conn2.commit()
-        conn2.close()
     conn.commit()
     conn.close()
 
@@ -456,7 +428,7 @@ def check_referral_reward(user_id: int):
     conn.close()
 
 # ============================================================================
-# Telegram Bot Setup
+# Bot Setup
 # ============================================================================
 
 bot = Bot(
@@ -598,38 +570,26 @@ def admin_action_keyboard(item_id: int, action_type: str):
 # Game Engine
 # ============================================================================
 
-def play_dice(prediction: int) -> Dict:
+def play_dice(prediction: int):
     result = random.randint(1, 6)
     win = (result == prediction)
-    return {
-        'result': f"عدد {result}",
-        'odds': DICE_ODDS if win else 0,
-        'win': win,
-    }
+    return {'result': f"عدد {result}", 'odds': DICE_ODDS if win else 0, 'win': win}
 
-def play_bowling(prediction: str) -> Dict:
+def play_bowling(prediction: str):
     outcomes = list(BOWLING_ODDS.keys())
     weights = [40, 20, 15, 10, 8, 5, 2]
     result = random.choices(outcomes, weights=weights)[0]
     win = (result == prediction)
-    return {
-        'result': result,
-        'odds': BOWLING_ODDS.get(result, 2.0) if win else 0,
-        'win': win,
-    }
+    return {'result': result, 'odds': BOWLING_ODDS.get(result, 2.0) if win else 0, 'win': win}
 
-def play_lottery(prediction: str) -> Dict:
+def play_lottery(prediction: str):
     outcomes = list(LOTTERY_ODDS.keys())
     weights = [30, 25, 20, 12, 8, 3, 2]
     result = random.choices(outcomes, weights=weights)[0]
     win = (result == prediction)
-    return {
-        'result': result,
-        'odds': LOTTERY_ODDS.get(result, 3.0) if win else 0,
-        'win': win,
-    }
+    return {'result': result, 'odds': LOTTERY_ODDS.get(result, 3.0) if win else 0, 'win': win}
 
-def play_rps(user_choice: str) -> Dict:
+def play_rps(user_choice: str):
     choices = ["سنگ", "کاغذ", "قیچی"]
     if random.random() < 0.55:
         if user_choice == "سنگ":
@@ -642,13 +602,13 @@ def play_rps(user_choice: str) -> Dict:
         bot_choice = random.choice(choices)
     
     if bot_choice == user_choice:
-        return {'result': 'مساوی', 'win': False, 'odds': 0, 'bot_choice': bot_choice}
+        return {'result': 'مساوی', 'win': False, 'odds': 0}
     elif (user_choice == "سنگ" and bot_choice == "قیچی") or \
          (user_choice == "کاغذ" and bot_choice == "سنگ") or \
          (user_choice == "قیچی" and bot_choice == "کاغذ"):
-        return {'result': f"ربات: {bot_choice}", 'win': True, 'odds': RPS_ODDS, 'bot_choice': bot_choice}
+        return {'result': f"ربات: {bot_choice}", 'win': True, 'odds': RPS_ODDS}
     else:
-        return {'result': f"ربات: {bot_choice}", 'win': False, 'odds': 0, 'bot_choice': bot_choice}
+        return {'result': f"ربات: {bot_choice}", 'win': False, 'odds': 0}
 
 # ============================================================================
 # Handlers
@@ -708,12 +668,7 @@ async def callback_game_selected(callback: CallbackQuery, state: FSMContext):
     game_type = callback.data.replace("game_", "")
     await state.update_data(game_type=game_type)
     
-    game_names = {
-        "dice": "تاس 🎲",
-        "bowling": "بولینگ 🎳",
-        "lottery": "قرعه 🎰",
-        "rps": "سنگ کاغذ قیچی ✊"
-    }
+    game_names = {"dice": "تاس 🎲", "bowling": "بولینگ 🎳", "lottery": "قرعه 🎰", "rps": "سنگ کاغذ قیچی ✊"}
     
     await callback.message.edit_text(
         f"🎯 <b>مرحله اول: پیش‌بینی نتیجه</b>\n\n"
@@ -729,7 +684,6 @@ async def callback_outcome_selected(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     outcome = callback.data.replace("outcome_", "")
     await state.update_data(outcome=outcome)
-    
     user_data = await state.get_data()
     game_type = user_data.get('game_type')
     
@@ -758,8 +712,8 @@ async def callback_outcome_selected(callback: CallbackQuery, state: FSMContext):
 async def callback_bet_selected(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     bet_amount = int(callback.data.replace("bet_", ""))
-    
     user = get_user(callback.from_user.id)
+    
     if not user or user['wallet'] < bet_amount:
         await callback.message.edit_text(
             "❌ <b>موجودی شما کافی نیست!</b>\n\n"
@@ -796,26 +750,19 @@ async def message_bet_custom(message: Message, state: FSMContext):
     try:
         amount_str = message.text.replace(',', '').strip()
         bet_amount = int(amount_str)
-        
         if bet_amount < 10_000:
             await message.answer("❌ حداقل مبلغ شرط ۱۰,۰۰۰ تومان است.")
             return
         
         user = get_user(message.from_user.id)
         if not user or user['wallet'] < bet_amount:
-            await message.answer(
-                "❌ <b>موجودی شما کافی نیست!</b>\n\n"
-                "لطفاً ابتدا حساب خود را شارژ نمایید.",
-                reply_markup=deposit_amount_keyboard()
-            )
+            await message.answer("❌ <b>موجودی شما کافی نیست!</b>", reply_markup=deposit_amount_keyboard())
             return
         
         await state.update_data(bet_amount=bet_amount)
         user_data = await state.get_data()
-        
         await message.answer(
             f"📋 <b>تایید نهایی شرط</b>\n\n"
-            f"لطفاً اطلاعات زیر را بررسی کنید:\n\n"
             f"🎮 بازی: {user_data['game_type']}\n"
             f"🎯 پیش‌بینی: {user_data['outcome']}\n"
             f"💰 مبلغ شرط: {bet_amount:,} تومان\n\n"
@@ -823,7 +770,6 @@ async def message_bet_custom(message: Message, state: FSMContext):
             reply_markup=confirm_bet_keyboard()
         )
         await state.set_state(GameStates.CONFIRM_BET)
-        
     except ValueError:
         await message.answer("❌ لطفاً یک عدد معتبر وارد کنید.")
 
@@ -831,7 +777,6 @@ async def message_bet_custom(message: Message, state: FSMContext):
 async def callback_confirm_bet(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     action = callback.data.replace("confirm_", "")
-    
     if action == "no":
         await callback.message.edit_text("❌ شرط لغو شد.", reply_markup=games_menu_keyboard())
         await state.clear()
@@ -870,8 +815,8 @@ async def callback_confirm_bet(callback: CallbackQuery, state: FSMContext):
               outcome, str(result['result']), 'win' if result['win'] else 'loss', profit)
     
     check_referral_reward(user_id)
-    
     user = get_user(user_id)
+    
     if result['win']:
         await callback.message.edit_text(
             f"🎉 <b>تبریک!</b>\n\n"
@@ -1060,10 +1005,7 @@ async def message_withdraw_amount(message: Message, state: FSMContext):
             return
         
         await state.update_data(withdraw_amount=amount)
-        await message.answer(
-            "💳 <b>اطلاعات کارت</b>\n\n"
-            "لطفاً شماره کارت خود را وارد کنید:"
-        )
+        await message.answer("💳 <b>اطلاعات کارت</b>\n\nلطفاً شماره کارت خود را وارد کنید:")
         await state.set_state(WithdrawalStates.ENTER_CARD)
     except ValueError:
         await message.answer("❌ لطفاً یک عدد معتبر وارد کنید.")
@@ -1075,10 +1017,7 @@ async def message_withdraw_card(message: Message, state: FSMContext):
         await message.answer("❌ شماره کارت نامعتبر است. لطفاً ۱۶ رقم وارد کنید.")
         return
     await state.update_data(card_number=card_number)
-    await message.answer(
-        "👤 <b>نام صاحب حساب</b>\n\n"
-        "لطفاً نام صاحب حساب را وارد کنید:"
-    )
+    await message.answer("👤 <b>نام صاحب حساب</b>\n\nلطفاً نام صاحب حساب را وارد کنید:")
     await state.set_state(WithdrawalStates.ENTER_CARD_OWNER)
 
 @dp.message(WithdrawalStates.ENTER_CARD_OWNER)
@@ -1089,7 +1028,6 @@ async def message_withdraw_card_owner(message: Message, state: FSMContext):
     
     await message.answer(
         f"📋 <b>تایید درخواست برداشت</b>\n\n"
-        f"لطفاً اطلاعات زیر را بررسی کنید:\n\n"
         f"💰 مبلغ: {user_data['withdraw_amount']:,} تومان\n"
         f"💳 شماره کارت: {user_data['card_number']}\n"
         f"👤 نام صاحب حساب: {card_owner}\n\n"
@@ -1112,7 +1050,6 @@ async def callback_withdraw_confirm(callback: CallbackQuery, state: FSMContext):
         user_data['card_number'],
         user_data['card_owner']
     )
-    
     update_wallet(callback.from_user.id, -user_data['withdraw_amount'])
     
     await callback.message.edit_text(
@@ -1123,7 +1060,6 @@ async def callback_withdraw_confirm(callback: CallbackQuery, state: FSMContext):
         reply_markup=main_menu_keyboard()
     )
     
-    user = get_user(callback.from_user.id)
     await bot.send_message(
         chat_id=OWNER_ID,
         text=f"📤 <b>درخواست برداشت جدید</b>\n\n"
