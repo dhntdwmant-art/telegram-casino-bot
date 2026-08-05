@@ -23,11 +23,11 @@ from enum import Enum
 # Environment & Configuration
 # ============================================================================
 
-BOT_TOKEN = "8913431377:AAFTtSDcpRViooI359BFw8J7qdbpl58d5ls"
+BOT_TOKEN = "8943333410:AAFaCwNKDQDk8bwxQcg1EUSHl7lkhHzuWWw"
 OWNER_ID = 7548145568
 CARD_NUMBER = "6062561009737464"
 CARD_OWNER = "مجاور"
-BOT_USERNAME = "tasbist_bot"
+BOT_USERNAME = "shartbist_bot"
 MIN_WITHDRAWAL = 100_000  # Toman
 MIN_DEPOSIT = 10_000  # Toman
 REFERRAL_REWARD = 10_000  # Toman
