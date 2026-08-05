@@ -1,5 +1,5 @@
 # ==============================================
-# 🎰 ربات کازینو - نسخه نهایی با کارمزد ۱۰٪
+# 🎰 ربات کازینو - نسخه نهایی (بدون جوین اجباری)
 # ==============================================
 
 import asyncio
@@ -25,7 +25,7 @@ from aiogram.enums import ParseMode
 # 🔧 تنظیمات
 # ==============================================
 
-# ⚠️ لطفاً این توکن را با توکن جدیدی که از BotFather گرفتید جایگزین کنید
+# ⚠️ لطفاً توکن جدید خود را اینجا جایگزین کنید
 BOT_TOKEN = "8975472860:AAE-eW542h7VnDICPUQ9UhL7AjIY-YKSLUQ"
 ADMIN_USER_ID = 7548145568
 ADMIN_PASSWORD = "09158029769"
@@ -34,8 +34,6 @@ DEFAULT_SETTINGS = {
     "card_number": "6062561009737464",
     "card_holder": "مجاور",
     "support_username": "@ad_tas",
-    "required_channel_id": "@gozaresh_taj",
-    "required_channel_link": "https://t.me/gozaresh_taj",
     "withdraw_log_channel": "@gozaresh_taj",
     "coin_to_toman": 1000,
     "min_withdraw_coins": 100,
@@ -45,7 +43,7 @@ DEFAULT_SETTINGS = {
     "daily_mission_reward": 50,
     "dice_win_chance": 16,
     "lottery_win_chance": 2,
-    "commission_percent": 10,  # 🏦 درصد کارمزد
+    "commission_percent": 10,
     "min_bet": 10,
     "max_bet": 10000
 }
@@ -176,8 +174,6 @@ class Database:
                 c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", 
                          (key, json.dumps(value) if isinstance(value, (list, dict)) else str(value)))
     
-    # ========== تنظیمات ==========
-    
     def get_setting(self, key, default=None):
         with self.conn() as c:
             r = c.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
@@ -205,19 +201,15 @@ class Database:
                     settings[r['key']] = r['value']
             return settings
     
-    # ========== کمیسیون ==========
-    
     def get_commission_percent(self):
         return int(self.get_setting('commission_percent', 10))
     
     def take_commission(self, winner_id, raw_prize, game_type='game'):
-        """کسر کارمزد از جایزه و واریز به ادمین"""
         percent = self.get_commission_percent()
         fee = int(raw_prize * percent / 100)
         final_prize = raw_prize - fee
         
         if fee > 0:
-            # واریز کارمزد به ادمین اصلی
             with self.conn() as c:
                 c.execute("UPDATE users SET balance=balance+? WHERE user_id=?", (fee, ADMIN_USER_ID))
                 c.execute("UPDATE users SET total_commission_paid=total_commission_paid+? WHERE user_id=?", (fee, winner_id))
@@ -232,8 +224,6 @@ class Database:
         with self.conn() as c:
             r = c.execute("SELECT COALESCE(SUM(amount),0) as t FROM transactions WHERE type='commission'").fetchone()
             return r['t']
-    
-    # ========== کاربران ==========
     
     def get_user(self, user_id):
         with self.conn() as c:
@@ -563,13 +553,12 @@ def admin_panel():
     return builder.as_markup()
 
 # ==============================================
-# 🚀 هندلر شروع (اصلاح شده برای رفع باگ هنگ کردن)
+# 🚀 هندلر شروع (بدون بررسی جوین اجباری)
 # ==============================================
 
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     user_id = message.from_user.id
-    
     logger.info(f"👤 کاربر {user_id} استارت زد")
     
     args = message.text.split()
@@ -599,33 +588,7 @@ async def cmd_start(message: Message):
         )
         return
     
-    # ===== بخش بررسی کانال با مدیریت خطا (اصلاح شده) =====
-    try:
-        channel_id = db.get_setting('required_channel_id', '@gozaresh_taj')
-        channel_link = db.get_setting('required_channel_link', 'https://t.me/gozaresh_taj')
-        
-        # اگر کانال تنظیم شده باشد، چک می‌کنیم
-        if channel_id:
-            member = await bot.get_chat_member(channel_id, user_id)
-            if member.status in ['left', 'kicked']:
-                builder = InlineKeyboardBuilder()
-                builder.row(InlineKeyboardButton(text="📢 عضویت در کانال", url=channel_link))
-                builder.row(InlineKeyboardButton(text="✅ عضو شدم", callback_data="check_join"))
-                
-                await message.answer(
-                    f"⛔ **برای استفاده از ربات، ابتدا باید عضو کانال ما شوید!**\n\n"
-                    f"📢 **کانال رسمی**\n🔗 {channel_link}\n\n"
-                    f"پس از عضویت، روی دکمه زیر کلیک کنید 👇",
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=builder.as_markup(),
-                    disable_web_page_preview=True
-                )
-                return
-    except Exception as e:
-        # 🛡️ اگر ربات در کانال ادمین نباشد، اینجا هنگ نمی‌کند و به کاربر اجازه ورود می‌دهد
-        logger.warning(f"⚠️ خطا در بررسی جوین کانال (ربات احتمالاً ادمین کانال نیست یا کانال وجود ندارد): {e}")
-    # ========================================================
-    
+    # بخش چک کردن جوین اجباری کلاً حذف شد!
     await send_welcome(message)
 
 async def send_welcome(message: Message):
@@ -655,19 +618,6 @@ async def send_welcome(message: Message):
     """
     
     await message.answer(welcome, parse_mode=ParseMode.MARKDOWN, reply_markup=main_menu())
-
-@router.callback_query(F.data == "check_join")
-async def check_join(callback: CallbackQuery):
-    try:
-        channel_id = db.get_setting('required_channel_id', '@gozaresh_taj')
-        member = await bot.get_chat_member(channel_id, callback.from_user.id)
-        if member.status not in ['left', 'kicked']:
-            await callback.message.delete()
-            await send_welcome(callback.message)
-        else:
-            await callback.answer("❌ هنوز عضو نشده‌اید!", show_alert=True)
-    except:
-        await callback.answer("✅ بررسی شد! /start را بزنید", show_alert=True)
 
 # ==============================================
 # 📋 منوهای کاربر
@@ -932,7 +882,6 @@ async def play_vs_bot(callback: CallbackQuery, game_type: str, bet: int):
         game_name = "قرعه‌کشی"
     
     if raw_prize > 0:
-        # 🏦 کسر کارمزد
         final_prize, fee = db.take_commission(user_id, raw_prize, game_name)
         db.add_balance(user_id, final_prize, 'win', f'برد {game_name} (جایزه: {raw_prize} - کارمزد {commission_percent}٪: {fee})')
     else:
@@ -1037,7 +986,6 @@ async def start_pvp_game(message: Message, room: dict, player2_id: int):
         winner_id = random.choice([creator_id, player2_id])
         raw_prize = bet * 2
         
-        # 🏦 کسر کارمزد
         commission_percent = db.get_commission_percent()
         final_prize, fee = db.take_commission(winner_id, raw_prize, game_type)
         
@@ -1147,7 +1095,6 @@ async def determine_pvp_winner(room: dict):
         winner_id = cid if winner == 1 else pid
         raw_prize = bet * 2
         
-        # 🏦 کسر کارمزد
         final_prize, fee = db.take_commission(winner_id, raw_prize, game_type)
         
         db.add_balance(winner_id, final_prize, 'win', f'برد (کارمزد: {fee})')
@@ -1748,7 +1695,6 @@ async def adm_settings(callback: CallbackQuery):
     text = "⚙️ **تنظیمات:**\n\n"
     text += f"💳 کارت: `{s.get('card_number', '---')}`\n"
     text += f"📞 پشتیبانی: {s.get('support_username', '---')}\n"
-    text += f"📢 کانال: {s.get('required_channel_id', '---')}\n"
     text += f"💰 نرخ: {s.get('coin_to_toman', '---')} تومان\n"
     text += f"⚠️ حداقل برداشت: {s.get('min_withdraw_coins', '---')}\n"
     text += f"👥 حداقل دعوت: {s.get('min_invites_first_withdraw', '---')}\n"
