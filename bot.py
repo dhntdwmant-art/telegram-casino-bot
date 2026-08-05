@@ -26,7 +26,7 @@ from aiogram.enums import ParseMode
 # ==============================================
 
 # ⚠️ لطفاً توکن جدید خود را اینجا جایگزین کنید
-BOT_TOKEN = "8975472860:AAE-eW542h7VnDICPUQ9UhL7AjIY-YKSLUQ"
+BOT_TOKEN = "8975472860:AAFDOaZ1ohKKNY0UMRHem31G-aMSiQfRtOY"
 ADMIN_USER_ID = 7548145568
 ADMIN_PASSWORD = "09158029769"
 
