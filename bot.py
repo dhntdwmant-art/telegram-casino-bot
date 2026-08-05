@@ -25,9 +25,10 @@ from aiogram.enums import ParseMode
 # 🔧 تنظیمات
 # ==============================================
 
+# ⚠️ لطفاً این توکن را با توکن جدیدی که از BotFather گرفتید جایگزین کنید
 BOT_TOKEN = "8975472860:AAE-eW542h7VnDICPUQ9UhL7AjIY-YKSLUQ"
 ADMIN_USER_ID = 7548145568
-ADMIN_PASSWORD = "123456"
+ADMIN_PASSWORD = "09158029769"
 
 DEFAULT_SETTINGS = {
     "card_number": "6062561009737464",
@@ -562,7 +563,7 @@ def admin_panel():
     return builder.as_markup()
 
 # ==============================================
-# 🚀 هندلر شروع
+# 🚀 هندلر شروع (اصلاح شده برای رفع باگ هنگ کردن)
 # ==============================================
 
 @router.message(Command("start"))
@@ -598,27 +599,32 @@ async def cmd_start(message: Message):
         )
         return
     
+    # ===== بخش بررسی کانال با مدیریت خطا (اصلاح شده) =====
     try:
         channel_id = db.get_setting('required_channel_id', '@gozaresh_taj')
         channel_link = db.get_setting('required_channel_link', 'https://t.me/gozaresh_taj')
         
-        member = await bot.get_chat_member(channel_id, user_id)
-        if member.status in ['left', 'kicked']:
-            builder = InlineKeyboardBuilder()
-            builder.row(InlineKeyboardButton(text="📢 عضویت در کانال", url=channel_link))
-            builder.row(InlineKeyboardButton(text="✅ عضو شدم", callback_data="check_join"))
-            
-            await message.answer(
-                f"⛔ **برای استفاده از ربات، ابتدا باید عضو کانال ما شوید!**\n\n"
-                f"📢 **کانال رسمی**\n🔗 {channel_link}\n\n"
-                f"پس از عضویت، روی دکمه زیر کلیک کنید 👇",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=builder.as_markup(),
-                disable_web_page_preview=True
-            )
-            return
+        # اگر کانال تنظیم شده باشد، چک می‌کنیم
+        if channel_id:
+            member = await bot.get_chat_member(channel_id, user_id)
+            if member.status in ['left', 'kicked']:
+                builder = InlineKeyboardBuilder()
+                builder.row(InlineKeyboardButton(text="📢 عضویت در کانال", url=channel_link))
+                builder.row(InlineKeyboardButton(text="✅ عضو شدم", callback_data="check_join"))
+                
+                await message.answer(
+                    f"⛔ **برای استفاده از ربات، ابتدا باید عضو کانال ما شوید!**\n\n"
+                    f"📢 **کانال رسمی**\n🔗 {channel_link}\n\n"
+                    f"پس از عضویت، روی دکمه زیر کلیک کنید 👇",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=builder.as_markup(),
+                    disable_web_page_preview=True
+                )
+                return
     except Exception as e:
-        logger.warning(f"خطا در بررسی جوین: {e}")
+        # 🛡️ اگر ربات در کانال ادمین نباشد، اینجا هنگ نمی‌کند و به کاربر اجازه ورود می‌دهد
+        logger.warning(f"⚠️ خطا در بررسی جوین کانال (ربات احتمالاً ادمین کانال نیست یا کانال وجود ندارد): {e}")
+    # ========================================================
     
     await send_welcome(message)
 
